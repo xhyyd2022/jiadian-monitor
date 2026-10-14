@@ -1,0 +1,518 @@
+:root {
+  color-scheme: dark;
+}
+body {
+  margin: 0;
+  /* 全局禁止选中/复制 */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+.app {
+  /* 深色（默认） */
+  --bg: #14161a;
+  --side: #101216;
+  --panel: #1a1e24;
+  --line: #2a2f37;
+  --fg: #e5e7eb;
+  --sub: #9ca3af;
+  --title: #93c5fd;
+  --accent: #38bdf8;
+  --btn: #1e2530;
+  --btn-hover: #262e3b;
+  --danger: #f87171;
+  --ok: #34d399;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+.app.light {
+  color-scheme: light;
+  --bg: #f4f6f8;
+  --side: #ffffff;
+  --panel: #ffffff;
+  --line: #e4e8ee;
+  --fg: #1f2430;
+  --sub: #6b7280;
+  --title: #2563eb;
+  --accent: #2563eb;
+  --btn: #eef2f7;
+  --btn-hover: #e2e8f0;
+  --danger: #dc2626;
+  --ok: #059669;
+}
+/* 自定义标题栏（原生标题栏已隐藏） */
+.titlebar {
+  flex: none;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 0 6px 0 12px;
+  background: var(--side);
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+}
+.tb-title {
+  font-size: 12px;
+  color: var(--sub);
+  letter-spacing: 0.3px;
+}
+.tb-btns {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+}
+.tb-btn {
+  width: 34px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--sub);
+  cursor: pointer;
+}
+.tb-btn svg {
+  font-size: 15px;
+}
+.tb-btn:hover {
+  background: var(--btn-hover);
+  color: var(--fg);
+}
+.tb-close:hover {
+  background: var(--danger);
+  color: #fff;
+}
+.main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+/* 全局隐藏滚动条，但保留滚动能力 */
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+*::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+.side {
+  width: 58px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 6px;
+  background: var(--side);
+  border-right: 1px solid var(--line);
+}
+.side button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 2px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--sub);
+  font-size: 11px;
+  cursor: pointer;
+}
+.side button svg {
+  font-size: 18px;
+}
+.side button.on {
+  background: var(--btn);
+  color: var(--fg);
+}
+.side .theme {
+  margin-top: auto;
+}
+.body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 14px;
+}
+.cols {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+  /* 铺满可用高度：卡片纵向拉伸，内容始终与底边框保持固定边距（修底部留白） */
+  min-height: 100%;
+}
+.col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 左列固定宽度（贴合设备信息内容），右列容纳 320 预览 */
+.col:first-child {
+  flex: 0 0 300px;
+}
+/* 每列最后一张卡撑满 → 两列底部对齐 */
+.col > .card:last-child {
+  flex: 1;
+}
+/* 右列随窗口自适应加宽（≥352）——内容始终与右边框保持固定边距，不留空白带 */
+.col.right {
+  flex: 1 1 auto;
+  min-width: 352px;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.card h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  margin: 0 0 8px;
+  color: var(--title);
+  white-space: nowrap;
+}
+/* 卡片标题里的纯文字（如「设备」）：不参与压缩，避免被下拉/按钮挤到换行 */
+.card h2 .ttl {
+  flex: none;
+}
+.card h2 svg {
+  font-size: 16px;
+}
+.state {
+  color: var(--sub);
+  font-weight: 400;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sub);
+}
+.dot.ok {
+  background: var(--ok);
+}
+.mini {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+/* 设备切换下拉：贴右，紧挨「刷新」按钮（只显示 SN 尾号 + 机型） */
+.devsel {
+  margin-left: auto;
+  max-width: 122px;
+  min-width: 0; /* 允许压缩，别把标题挤换行 */
+  padding: 2px 6px;
+  font-size: 11px;
+}
+.devsel + .mini {
+  margin-left: 6px;
+}
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.row:last-of-type {
+  border-bottom: none;
+}
+.row > svg {
+  color: var(--sub);
+  font-size: 15px;
+  flex: none;
+}
+.lbl {
+  flex: 1;
+  color: var(--fg);
+  min-width: 0;
+}
+.val {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  word-break: break-all;
+  color: var(--fg);
+}
+.val.off {
+  color: var(--sub);
+}
+select {
+  background: var(--btn);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+/* 简洁滑杆：统一轨道 + 圆点，不留「填不满的空块」 */
+.rng {
+  flex: 0 0 52%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px;
+  background: transparent;
+  margin: 0;
+}
+.rng::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--btn-hover);
+}
+.rng::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.hint.none {
+  opacity: 0.5;
+}
+.wide {
+  width: 100%;
+}
+.btns {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+.btns.two {
+  grid-template-columns: repeat(2, 1fr);
+}
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px 10px;
+  background: var(--btn);
+  color: var(--fg);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  min-width: 0;
+  transition: background 0.12s, color 0.12s;
+}
+button:hover:not(:disabled) {
+  background: var(--btn-hover);
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+button.primary {
+  background: var(--accent);
+  color: #fff;
+}
+button.danger {
+  color: var(--danger);
+}
+.err {
+  color: var(--danger);
+}
+.hint {
+  color: var(--sub);
+  font-size: 11.5px;
+  margin: 6px 0 0;
+  line-height: 1.75;
+  /* 只在整段放不下时才断，不拆散词语；长路径仍能自动折行 */
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.preview img {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  image-rendering: pixelated;
+}
+.ph {
+  width: 320px;
+  height: 240px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--sub);
+  font-size: 13px;
+}
+.card ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* 只作用于 <ul> 指标行；<ol> 步骤表有独立规则（旧的 .card li 会把 display:flex
+   泄漏给步骤表的 <li>，把 <code> 块级化 → 标签被挤到行尾、断行错乱） */
+.card ul > li {
+  display: flex;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.card ul > li:last-child {
+  border-bottom: none;
+}
+/* 行内代码标签：与正文同基线、不换行，长标签不被拆开 */
+code {
+  display: inline;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.94em;
+  line-height: 1.2;
+  background: var(--btn);
+  color: var(--fg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+.sw {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--sub);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+/* 真正的左右开关 */
+.sw input {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  border-radius: 10px;
+  background: var(--btn-hover);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.sw input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: transform 0.15s;
+}
+.sw input:checked {
+  background: var(--accent);
+}
+.sw input:checked::after {
+  transform: translateX(16px);
+}
+/* 内容区按钮统一宽度，视觉整齐 */
+.body button {
+  min-width: 72px;
+}
+/* 设置页下拉统一宽度，视觉整齐 */
+.row select {
+  width: 76px;
+  flex: none;
+}
+/* 单位设置的下拉要放得下「手动指定」/「跟随素材」四个汉字 */
+.card.unit .row select {
+  width: 96px;
+}
+/* 素材页 */
+.steps {
+  margin: 0;
+  padding-left: 21px;
+  color: var(--sub);
+  font-size: 12.5px;
+  line-height: 1.75;
+}
+.steps li {
+  padding: 3px 0 3px 2px;
+  /* 尽量避免行尾只剩一两个字（Chromium 117+；不支持也只是退化为普通断行） */
+  text-wrap: pretty;
+}
+.steps li::marker {
+  color: var(--title);
+  font-variant-numeric: tabular-nums;
+}
+.guide {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--btn);
+  border-radius: 6px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--sub);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+/* 预览保持 320×240 原始像素（不放大）；卡片变宽时居中，两侧留白对称 */
+.preview {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+.preview img {
+  display: block;
+  flex: none;
+  width: 320px;
+  height: 240px;
+  border-radius: 4px;
+  image-rendering: pixelated;
+}
+/* 弹窗（数据源自检） */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.modal {
+  width: min(430px, calc(100vw - 48px));
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px 18px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
+}
+.modal h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--title);
+}
+.modal h3 svg {
+  font-size: 18px;
+}
+.modal .hint a {
+  color: var(--accent);
+  cursor: pointer;
+}
+.modal .btns {
+  margin-top: 12px;
+}

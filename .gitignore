@@ -1,0 +1,63 @@
+# ── 依赖（不入库；云端/本地各自 npm ci）──
+node_modules/
+
+# ── 构建产物 ──
+dist/
+dist-ssr/
+target/
+*.local
+
+# ── 运行时产物 ──
+logs
+log/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ── 本机私有内容 ──
+.env
+.env.*
+*.key
+*.pem
+secrets*
+*.private.*
+private/
+*.ini
+
+# ── 编辑器 / 系统 ──
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ── AI 助手 / Agent 的记忆与配置（绝不入库、绝不外传）──
+.workbuddy/
+.codebuddy/
+.claude/
+.cursor/
+.cursorrules
+.windsurf/
+.continue/
+.clinerules
+.roo/
+.gemini/
+.qwen/
+.trae/
+.copilot/
+.aider*
+.github/copilot-instructions.md
+AGENTS.md
+AGENT.md
+CLAUDE.md
+GEMINI.md
+QWEN.md
+.mcp.json
