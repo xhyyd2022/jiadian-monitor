@@ -288,6 +288,12 @@ pub fn read_for_mode(token: (bool, u64)) -> Result<Option<Sample>, ()> {
     Ok(if token.0 { state.current().map(|s| s.sample) } else { None })
 }
 
+/// Convenience: return current Sample, or None if unavailable.
+pub fn read() -> Option<Sample> {
+    let token = mode_token();
+    read_for_mode(token).ok().flatten()
+}
+
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }

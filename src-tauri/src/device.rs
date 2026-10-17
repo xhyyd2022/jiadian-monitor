@@ -210,6 +210,12 @@ pub fn info(serial: Option<String>) -> Result<serde_json::Value, String> {
                 _ => "UNKNOWN".into(),
             });
         let flash_id = f.get(1).map(|s| s.trim().to_string()).unwrap_or_default();
+        // V1 vs V1P: V1 = OUT 0x01 + IN 0x82, V1P = OUT 0x01 + IN 0x81
+        let hw = match (dev.pipe_out, dev.pipe_in) {
+            (0x01, 0x82) => "V1".to_string(),
+            (0x01, 0x81) => "V1P".to_string(),
+            _ => hw,
+        };
         let mv = pong
             .strip_prefix("PONG,")
             .and_then(|s| s.trim().parse::<i64>().ok());

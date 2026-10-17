@@ -128,6 +128,62 @@ async function uninstallLhws() {
 
 const openUrl = (url: string) => invoke("open_url", { url }).catch(() => {});
 
+// ---- 外设（鼠标/耳机电量）----
+interface PeriDevice { vid: string; pid: string; enabled: boolean; label: string; }
+interface PeriConfig { devices: PeriDevice[]; }
+interface PeriDetected { vid: number; pid: number; product_string: string; supported: boolean; }
+const periConfig = ref<PeriConfig>({ devices: [] });
+const periBusy = ref(false);
+const periMsg = ref("");
+const periDetected = ref<PeriDetected[]>([]);
+
+async function loadPeri() {
+  try {
+    periConfig.value = await invoke<PeriConfig>("peripherals_get");
+    periDetected.value = await invoke<PeriDetected[]>("peripherals_devices");
+  } catch (e) { periMsg.value = String(e); }
+}
+onMounted(() => { loadPeri(); refreshLhws(); });
+
+function vidHex(n: number): string { return n.toString(16).padStart(4, "0"); }
+function addPeriSlot() {
+  periConfig.value.devices.push({ vid: "", pid: "", enabled: true, label: "" });
+}
+function removePeriSlot(i: number) {
+  periConfig.value.devices.splice(i, 1);
+}
+function onPeriDeviceChange(slot: PeriDevice, value: string) {
+  const [v, p] = value.split(":");
+  slot.vid = v || "";
+  slot.pid = p || "";
+  // Auto-fill label with device product string if label is empty
+  if (!slot.label.trim() && v && p) {
+    const vid = parseInt(v, 16);
+    const pid = parseInt(p, 16);
+    const found = periDetected.value.find((d) => d.vid === vid && d.pid === pid);
+    if (found) slot.label = found.product_string;
+  }
+}
+async function savePeri() {
+  for (let i = 0; i < periConfig.value.devices.length; i++) {
+    const s = periConfig.value.devices[i];
+    if (s.enabled) {
+      if (!s.vid || !s.pid) { periMsg.value = `第 ${i + 1} 个外设请选择设备`; return; }
+      if (!s.label.trim()) { periMsg.value = `第 ${i + 1} 个外设请填写名称`; return; }
+      const enabledCount = periConfig.value.devices.filter((d: PeriDevice) => d.enabled).length;
+      const maxLen = enabledCount >= 2 ? 6 : 16;
+      if (s.label.length > maxLen) { periMsg.value = `第 ${i + 1} 个外设名称不能超过 ${maxLen} 个字符`; return; }
+    }
+  }
+  periBusy.value = true; periMsg.value = "";
+  try {
+    await invoke("peripherals_set", { cfg: periConfig.value });
+    await invoke("mouse_battery_restart");
+    periMsg.value = "已保存并重启 mouse-battery 服务";
+  } catch (e) { periMsg.value = String(e); }
+  finally { periBusy.value = false; }
+}
+
 onMounted(() => {
   refreshLhws();
 });
@@ -185,6 +241,29 @@ onMounted(() => {
         开：改用 PDH 自算总占用率，并在支持的大小核机型上输出 P 核 / E 核分组。
         切换后须等待后台确认及新来源采样预热；未就绪或分组不可用时显示「—」，不沿用旧值或补成 0。
       </p>
+    </div>
+
+    <div class="card">
+      <h2><Icon icon="line-md:list" />外设</h2>
+      <p class="hint">选择要显示的外设（鼠标 / 耳机 / 键盘）。顺序 = 面板显示顺序。</p>
+      <div v-for="(slot, i) in periConfig.devices" :key="i" class="peri-row">
+        <label class="sw"><input type="checkbox" v-model="slot.enabled" /></label>
+        <select class="peri-select" :value="slot.vid + ':' + slot.pid" @change="(e: any) => onPeriDeviceChange(slot, e.target.value)" :disabled="!slot.enabled">
+          <option value="">手动选择设备</option>
+          <option v-for="d in periDetected" :key="d.vid + ':' + d.pid" :value="vidHex(d.vid) + ':' + vidHex(d.pid)">
+            {{ d.product_string }} ({{ vidHex(d.vid) }}:{{ vidHex(d.pid) }})
+          </option>
+        </select>
+        <input v-model="slot.label" placeholder="显示名" class="peri-name" :class="{ 'input-error': slot.enabled && (!slot.label.trim() || slot.label.length > (periConfig.devices.filter((d: PeriDevice) => d.enabled).length >= 2 ? 6 : 16)) }" :maxlength="periConfig.devices.filter((d: PeriDevice) => d.enabled).length >= 2 ? 6 : 16" :disabled="!slot.enabled" />
+        <button @click="removePeriSlot(i)" :disabled="periBusy" class="mini-del">×</button>
+      </div>
+      <p v-if="periConfig.devices.some((d: PeriDevice) => d.enabled && (!d.label.trim() || d.label.length > (periConfig.devices.filter((x: PeriDevice) => x.enabled).length >= 2 ? 6 : 16)))" class="peri-warn">⚠ 已启用的外设名称不能为空，且两个及以上外设时名称最多6个字符</p>
+      <p v-if="periMsg" class="peri-msg" :class="{ 'ok': periMsg.includes('已保存') }">{{ periMsg }}</p>
+      <div class="btns two">
+        <button @click="addPeriSlot" :disabled="periBusy">添加外设</button>
+        <button @click="savePeri" :disabled="periBusy" class="primary">{{ periBusy ? "保存中…" : "保存并重启" }}</button>
+      </div>
+      <p class="hint">未识别的设备可手动选择 VID/PID；新协议支持需重编 mouse-battery.exe。</p>
     </div>
 
     <div class="card">

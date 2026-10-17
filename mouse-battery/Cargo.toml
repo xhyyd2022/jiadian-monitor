@@ -1,0 +1,19 @@
+[package]
+name = "mouse_battery"
+version = "0.1.0"
+edition = "2021"
+description = "Plugin-based wireless mouse battery HTTP service (Akko/Compx first)"
+
+[lib]
+name = "mouse_battery"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mouse-battery"
+path = "src/main.rs"
+
+[dependencies]
+hidapi = "2.4"
+thiserror = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"

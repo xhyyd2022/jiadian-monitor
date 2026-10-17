@@ -172,6 +172,8 @@ const GROUP_ICON: Record<string, string> = {
 const sections = computed(() => {
   const out: { title: string; icon: string; items: BasicMetric[] }[] = [];
   for (const m of metrics.value) {
+    // Hide template-only label slots (mouse1_label, mouse2_label)
+    if (/^mouse\d+_label$/.test(m.key)) continue;
     const last = out[out.length - 1];
     if (last && last.title === m.group) last.items.push(m);
     else out.push({ title: m.group, icon: GROUP_ICON[m.group] || "line-md:list", items: [m] });

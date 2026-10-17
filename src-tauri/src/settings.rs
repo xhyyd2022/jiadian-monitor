@@ -47,6 +47,8 @@ pub struct Settings {
     pub unit_rate: String,
     pub unit_temperature: String,
     pub unit_duration: String,
+    /// V1 device support (experimental, hidden by default)
+    pub v1_enable: bool,
 }
 
 impl Default for Settings {
@@ -64,6 +66,7 @@ impl Default for Settings {
             unit_rate: String::new(),
             unit_temperature: String::new(),
             unit_duration: String::new(),
+            v1_enable: false,
         }
     }
 }
@@ -109,6 +112,7 @@ impl Settings {
             unit_rate: s("units.rate").unwrap_or("").trim().to_string(),
             unit_temperature: s("units.temperature").unwrap_or("").trim().to_string(),
             unit_duration: s("units.duration").unwrap_or("").trim().to_string(),
+            v1_enable: s("device.v1_enable").map(truthy).unwrap_or(d.v1_enable),
         }
     }
 
@@ -144,7 +148,11 @@ impl Settings {
              capacity={}\n\
              rate={}\n\
              temperature={}\n\
-             duration={}\n",
+             duration={}\n\
+             \n\
+             [device]\n\
+             ; 1 = 在设备列表中显示 V1 设备（实验性，默认 0 隐藏）\n\
+             v1_enable={}\n",
             b(self.silent_start),
             b(self.logging),
             b(self.high_fps),
@@ -157,6 +165,7 @@ impl Settings {
             self.unit_rate,
             self.unit_temperature,
             self.unit_duration,
+            b(self.v1_enable),
         )
     }
 }
@@ -332,6 +341,7 @@ pub fn to_json(s: &Settings) -> Value {
         "unitRate": s.unit_rate,
         "unitTemp": s.unit_temperature,
         "unitDuration": s.unit_duration,
+        "v1Enable": s.v1_enable,
     })
 }
 

@@ -533,3 +533,98 @@ code {
 .modal .btns {
   margin-top: 12px;
 }
+
+/* 外设设置 */
+.peri-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.peri-row:last-of-type {
+  border-bottom: none;
+}
+.peri-select {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--fg);
+  font-size: 13px;
+}
+.peri-name {
+  width: 110px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--fg);
+  font-size: 13px;
+}
+.peri-name.input-error {
+  border-color: #e55;
+}
+.peri-warn {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #e55;
+}
+.peri-msg {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #e55;
+}
+.peri-msg.ok {
+  color: #4caf50;
+}
+.mini-del {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--sub);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+.mini-del:hover {
+  color: #e55;
+  border-color: #e55;
+}
+.peri-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+.btn-full {
+  flex: 1;
+  padding: 8px;
+  text-align: center;
+}
+.btn-secondary {
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn-secondary:hover {
+  border-color: var(--accent);
+}
+.btn-primary {
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn-primary:hover {
+  opacity: 0.9;
+}

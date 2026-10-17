@@ -30,6 +30,7 @@ secrets*
 *.private.*
 private/
 *.ini
+peripherals.json
 
 # ── 编辑器 / 系统 ──
 .vscode/*

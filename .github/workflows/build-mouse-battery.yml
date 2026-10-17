@@ -1,0 +1,96 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  mouse-battery 独立构建 + 发版
+#
+#  触发方式：
+#    1. 手动（Actions → build-mouse-battery → Run workflow）
+#    2. 当 mouse-battery/ 目录有 push 时自动触发
+#
+#  产物：mouse-battery.exe，发布到单独的 Release 标签 mouse-battery-v<版本号>
+#  版本号：修改 mouse-battery/Cargo.toml 中的 version
+# ─────────────────────────────────────────────────────────────────────────────
+name: build-mouse-battery
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: 标记为预发布（Pre-release）
+        type: boolean
+        default: false
+  push:
+    paths:
+      - 'mouse-battery/**'
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows 构建 mouse-battery.exe
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust（MSVC）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: 缓存 Rust 编译产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mouse-battery -> target
+
+      - name: 读取版本号
+        shell: pwsh
+        run: |
+          $m = Select-String -Path mouse-battery/Cargo.toml -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          $ver = $m.Matches[0].Groups[1].Value
+          Write-Host "mouse-battery version: $ver"
+          "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 构建 mouse-battery.exe
+        shell: pwsh
+        run: |
+          cd mouse-battery
+          cargo build --release
+          Get-ChildItem "target/release/mouse-battery.exe" | Select-Object Name, Length
+
+      - name: 检查版本标签是否已存在
+        shell: pwsh
+        run: |
+          $tag = "mouse-battery-v$env:VERSION"
+          $hit = git ls-remote --tags origin "refs/tags/$tag"
+          if ($hit) {
+            Write-Host "标签 $tag 已存在，跳过发版（仅上传 artifact）"
+            "SKIP_RELEASE=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: mouse-battery-windows
+          if-no-files-found: error
+          path: mouse-battery/target/release/mouse-battery.exe
+
+      - name: 发布 Release
+        if: env.SKIP_RELEASE != '1'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mouse-battery-v${{ env.VERSION }}
+          name: mouse-battery v${{ env.VERSION }}
+          body: |
+            mouse-battery 独立版本（外设电量读取服务）。
+
+            使用方法：将 `mouse-battery.exe` 放到 jiaidian-monitor.exe 同目录即可。
+            新增外设协议支持时，只需替换此文件，无需更新主程序。
+          prerelease: ${{ inputs.prerelease }}
+          files: |
+            mouse-battery/target/release/mouse-battery.exe

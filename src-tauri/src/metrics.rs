@@ -95,6 +95,140 @@ pub(crate) fn push_text(out: &mut Vec<BasicMetric>, group: &str, key: &str, labe
     });
 }
 
+fn push_text_hidden(out: &mut Vec<BasicMetric>, group: &str, key: &str, label: &str, src: &str) {
+    push_text(out, group, key, label, "", src);
+}
+
+// ---------------------------------------------------------------------------
+// 无线鼠标电量（外部 mouse-battery.exe HTTP 服务，端口 8767）
+// ---------------------------------------------------------------------------
+
+fn http_get(host: &str, port: u16, path: &str, timeout_ms: u64) -> Option<String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+    let mut stream = TcpStream::connect_timeout(
+        &format!("{host}:{port}").parse().ok()?,
+        Duration::from_millis(timeout_ms),
+    ).ok()?;
+    stream.set_read_timeout(Some(Duration::from_millis(timeout_ms))).ok()?;
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).ok()?;
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let body = text.split("\r\n\r\n").nth(1).unwrap_or("");
+    Some(body.to_string())
+}
+
+pub fn spawn_mouse_service() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        if http_get("127.0.0.1", 8767, "/health", 300).is_some() {
+            return;
+        }
+        let exe = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("mouse-battery.exe")));
+        if let Some(exe) = exe {
+            if exe.exists() {
+                let mut cmd = std::process::Command::new(&exe);
+                cmd.stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(0x08000000);
+                }
+                let _ = cmd.spawn();
+            }
+        }
+    });
+}
+
+pub(crate) fn mouse_fill(out: &mut Vec<BasicMetric>) {
+    // 1. Get metrics from mouse-battery
+    let metrics_body = match http_get("127.0.0.1", 8767, "/metrics", 500) {
+        Some(b) => b,
+        None => return,
+    };
+    let metrics_val: serde_json::Value = match serde_json::from_str(&metrics_body) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let metrics_arr = match metrics_val.as_array() {
+        Some(a) => a,
+        None => return,
+    };
+
+    // 2. Get devices list to build vid/pid -> provider map
+    let mut vidpid_to_provider: std::collections::HashMap<(u64, u64), String> = std::collections::HashMap::new();
+    if let Some(dev_body) = http_get("127.0.0.1", 8767, "/devices", 500) {
+        if let Ok(dev_val) = serde_json::from_str::<serde_json::Value>(&dev_body) {
+            if let Some(dev_arr) = dev_val.as_array() {
+                for d in dev_arr {
+                    if let (Some(vid), Some(pid), Some(provider)) = (
+                        d.get("vid").and_then(|v| v.as_u64()),
+                        d.get("pid").and_then(|p| p.as_u64()),
+                        d.get("provider").and_then(|p| p.as_str()),
+                    ) {
+                        vidpid_to_provider.insert((vid, pid), provider.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Get enabled peripherals config (in display order)
+    let cfg = crate::peripherals::peripherals_get();
+    let enabled: Vec<(u16, u16, String)> = cfg.devices.iter()
+        .filter(|d| d.enabled)
+        .map(|d| {
+            let label = if d.label.trim().is_empty() { "外设".to_string() } else { d.label.trim().to_string() };
+            (d.vid, d.pid, label)
+        })
+        .collect();
+
+    // 4. For each enabled peripheral in config order, find matching metric
+    for (i, (vid, pid, label)) in enabled.iter().enumerate() {
+        let n = i + 1;
+        let provider = vidpid_to_provider.get(&((*vid as u64), (*pid as u64)));
+
+        // Find metric whose source contains this provider name
+        let matched = metrics_arr.iter().find(|m| {
+            if let Some(prov) = provider {
+                let source = m.get("source").and_then(|s| s.as_str()).unwrap_or("");
+                source.contains(prov.as_str())
+            } else {
+                false
+            }
+        });
+
+        if let Some(item) = matched {
+            let group = item.get("group").and_then(|g| g.as_str()).unwrap_or("外设");
+            let source = item.get("source").and_then(|s| s.as_str()).unwrap_or("mouse-battery.exe");
+            let text = item.get("text").and_then(|t| t.as_str()).unwrap_or("—");
+            let value = item.get("value").and_then(|v| v.as_f64());
+            push(out, group, &format!("mouse{n}_pct"), label, "%", 0, value, source);
+            if let Some(last) = out.last_mut() {
+                last.text = text.to_string();
+            }
+            push_text(out, group, &format!("mouse{n}_label"), label, label, source);
+        } else {
+            // No data for this device - push empty placeholders
+            push_text(out, "外设", &format!("mouse{n}_pct"), label, "", "mouse-battery.exe");
+            push_text(out, "外设", &format!("mouse{n}_label"), label, "", "mouse-battery.exe");
+        }
+    }
+    // Pad remaining slots up to 2
+    for n in (enabled.len() + 1)..=2 {
+        push_text(out, "外设", &format!("mouse{n}_pct"), "", "", "mouse-battery.exe");
+        push_text(out, "外设", &format!("mouse{n}_label"), "", "", "mouse-battery.exe");
+    }
+}
+
 /// 精简 CPU 型号，只留**最终型号**：
 /// `AMD Ryzen 7 9700X` → `9700X`；`Intel Core i9-14900K` → `14900K`；`Intel Core i7-14700K` → `14700K`。
 ///
@@ -613,6 +747,7 @@ pub fn basic() -> Vec<BasicMetric> {
         }
         Ok(sample) => select_cpu_source(&mut out, token.0, sample),
     }
+    mouse_fill(&mut out);
     sort_groups(&mut out);
     out
 }

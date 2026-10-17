@@ -45,6 +45,8 @@
   磁盘   disk1_pct(%)  disk1_used(GB) disk1_total(GB)    disk1_temp(℃)  ＋ 合计 disk_all_pct/used/total
   网络   net1_down(KB/s) net1_up(KB/s) net1_total_down(GB) net1_total_up(GB)
   风扇   fan1(RPM)      系统  sys_uptime(s)
+  外设   mouse1_name(鼠标名) mouse1_pct(电量%) mouse1_charging(充电中?)
+         mouse2_name mouse2_pct mouse2_charging …（按启用数量从1起编号，最多支持4个外设）
 ▷ `cpu_name` / `gpu1_name` 是**文本槽**（精简型号，如 `9700X` / `5070Ti`）：直接当文字用，
   **不要**配 `data-fmt` / `data-warn` / `data-suffix`。名称（型号 / 网卡连接名 / 风扇通道名）
   都由上位机从数据源读，你不用管。

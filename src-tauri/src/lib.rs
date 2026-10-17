@@ -17,6 +17,7 @@ pub use render::PANEL_CDP_PORT;
 mod pipeline;
 mod render;
 mod settings;
+mod peripherals;
 pub mod single;
 mod tray;
 mod winusb;
@@ -25,6 +26,7 @@ use serde_json::json;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tauri::Manager;
+use peripherals::{peripherals_get, peripherals_set, peripherals_devices, mouse_battery_restart};
 
 /// 主 AppHandle（`setup` 时存入）：本地 API 线程靠它切到主线程干活。
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
@@ -314,6 +316,17 @@ fn device_list() -> Result<Vec<serde_json::Value>, String> {
             "connected": connected,
         }));
     }
+    // Filter: hide V1 devices when v1_enable is false (V1 support not ready)
+    if !crate::settings::current().v1_enable {
+        out.retain(|d| {
+            let by_variant = !d.get("variant")
+                .and_then(|v| v.as_str())
+                .is_some_and(|v| v.eq_ignore_ascii_case("V1"));
+            let path = d.get("path").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+            let by_path = !path.contains("vid_0408") && !path.contains("vid_2e3c");
+            by_variant && by_path
+        });
+    }
     Ok(out)
 }
 
@@ -580,6 +593,9 @@ pub fn run() {
     // 本地指标 API：面板网页直接 fetch，无需注入。
     api::spawn();
 
+    // 启动外部鼠标电量服务（mouse-battery.exe，端口 8767）。
+    metrics::spawn_mouse_service();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -648,7 +664,11 @@ pub fn run() {
             link_state,
             assets_dir,
             import_panel,
-            hide_to_tray
+            hide_to_tray,
+            peripherals_get,
+            peripherals_set,
+            peripherals_devices,
+            mouse_battery_restart
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

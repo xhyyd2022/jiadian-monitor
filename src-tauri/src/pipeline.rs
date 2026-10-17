@@ -349,6 +349,60 @@ function clearCpuLoad(key){
 function clearCpuLoads(){
   for(var i=0;i<CPU_LOADS.length;i++)clearCpuLoad(CPU_LOADS[i]);
 }
+function setHidden(key,hide){
+  var els=document.querySelectorAll('[data-slot="'+key+'"]');
+  for(var i=0;i<els.length;i++){
+    els[i].style.visibility=hide?'hidden':'';
+  }
+  var bars=document.querySelectorAll('[data-kind="bar"][data-from="'+key+'"]');
+  for(var j=0;j<bars.length;j++){bars[j].style.visibility=hide?'hidden':'';}
+  if(key==='mouse1_pct'||key==='mouse1_label'||key==='mouse2_pct'||key==='mouse2_label'){
+    var m1Vis=!!document.querySelector('[data-slot="mouse1_pct"]')&&document.querySelector('[data-slot="mouse1_pct"]').style.visibility!=='hidden';
+    var m2Vis=!!document.querySelector('[data-slot="mouse2_pct"]')&&document.querySelector('[data-slot="mouse2_pct"]').style.visibility!=='hidden';
+    var cols=[];
+    if(m1Vis&&m2Vis){cols=['cpu_temp','gpu1_temp','mouse1_pct','mouse2_pct'];}
+    else if(m1Vis){cols=['cpu_temp','gpu1_temp','mouse1_pct'];}
+    else if(m2Vis){cols=['cpu_temp','gpu1_temp','mouse2_pct'];}
+    else{cols=['cpu_temp','gpu1_temp'];}
+    var widths=[];
+    for(var s=0;s<cols.length;s++){
+      var v=document.querySelector('[data-slot="'+cols[s]+'"]');
+      var l=v?v.previousElementSibling:null;
+      while(l&&!(l.classList&&l.classList.contains('lbl')))l=l.previousElementSibling;
+      var w=0;
+      if(v)w=Math.max(w,v.offsetWidth);
+      if(l)w=Math.max(w,l.offsetWidth);
+      widths.push(w);
+    }
+    var n=cols.length;
+    var panelW=300,leftMargin=16,rightMargin=8;
+    var avail=panelW-leftMargin-rightMargin;
+    var x=[];
+    for(var s=0;s<n;s++){
+      var centerX=leftMargin+avail*(2*s+1)/(2*n);
+      x.push(centerX-widths[s]/2);
+    }
+    for(var s=1;s<n;s++){
+      var minX=x[s-1]+widths[s-1]+10;
+      if(x[s]<minX)x[s]=minX;
+    }
+    for(var s=0;s<n;s++){
+      var ve=document.querySelectorAll('[data-slot="'+cols[s]+'"]');
+      for(var k=0;k<ve.length;k++){
+        if(!ve[k].dataset.origLeft)ve[k].dataset.origLeft=ve[k].style.left;
+        ve[k].style.left=x[s]+'px';
+      }
+      var lv=ve[0]?ve[0].previousElementSibling:null;
+      while(lv&&!(lv.classList&&lv.classList.contains('lbl')))lv=lv.previousElementSibling;
+      if(lv){
+        if(!lv.dataset.origLeft)lv.dataset.origLeft=lv.style.left;
+        lv.style.left=x[s]+'px';
+      }
+    }
+    if(m1Vis){var m1l=document.querySelectorAll('[data-slot="mouse1_label"]');for(var k=0;k<m1l.length;k++){if(!m1l[k].dataset.origLeft)m1l[k].dataset.origLeft=m1l[k].style.left;m1l[k].style.left=x[cols.indexOf('mouse1_pct')]+'px';}}
+    if(m2Vis){var m2l=document.querySelectorAll('[data-slot="mouse2_label"]');for(var k=0;k<m2l.length;k++){if(!m2l[k].dataset.origLeft)m2l[k].dataset.origLeft=m2l[k].style.left;m2l[k].style.left=x[cols.indexOf('mouse2_pct')]+'px';}}
+  }
+}
 function apply(list,cfg){
   if(cfg&&cfg.mode)CFG=cfg;
   var available={};
@@ -364,10 +418,14 @@ function apply(list,cfg){
     var m=list[i];
     if(CPU_LOADS.indexOf(m.key)!==-1&&!available[m.key])continue;
     if(m.kind==='text'){
-      if(m.text!==null&&m.text!==undefined)window.__setSlot(m.key,String(m.text));
+      var t=(m.text===null||m.text===undefined)?'':String(m.text);
+      if(t===''){setHidden(m.key,true);continue;}
+      setHidden(m.key,false);
+      window.__setSlot(m.key,t);
       continue;
     }
     if(m.value===null||m.value===undefined)continue;
+    setHidden(m.key,false);
     var f=fam(m.unit),tgt=null,manual=false;
     if(CFG.mode==='manual'&&f&&CFG.units&&CFG.units[f]){tgt=CFG.units[f];manual=true;}
     else if(U[m.key]){tgt=U[m.key];}
@@ -375,6 +433,15 @@ function apply(list,cfg){
     if(!(m.key in LAST)||LAST[m.key]!==want){LAST[m.key]=want;suffix(m.key,want);}
     window.__setSlot(m.key,String(tgt?conv(m.value,m.unit,tgt):m.value));
   }
+  // Final layout recalc after browser renders text (accurate widths)
+  requestAnimationFrame(function(){
+    var m1=document.querySelector('[data-slot="mouse1_pct"]');
+    var m2=document.querySelector('[data-slot="mouse2_pct"]');
+    if(m1||m2){
+      var h1=m1&&m1.style.visibility==='hidden';
+      setHidden('mouse1_pct',h1);
+    }
+  });
 }
 function request(url){
   var controller=new AbortController();
