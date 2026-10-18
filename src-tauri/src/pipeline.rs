@@ -4,7 +4,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use serde_json::{json, Value};
@@ -282,9 +282,8 @@ fn ensure_panel_webview(app: &AppHandle, url: &str, w: u32, h: u32) -> Result<()
 /// 素材自己的 `data-fmt` 仍可再决定显示小数位。
 fn pull_js() -> String {
     const JS: &str = r#"(function(){
-var PORT='__PORT__';
-var MURL='http://127.0.0.1:'+PORT+'/metrics';
-var UURL='http://127.0.0.1:'+PORT+'/units';
+var MURL='__BASE__/metrics';
+var UURL='__BASE__/units';
 // 单位族：同一族内可换算（×倍数）。规范单位：容量 GB / 显存 MB、速率 KB/s、温度 ℃、功耗 W、时长 s（秒）。
 var BYTES={B:1,KB:1024,MB:1048576,GB:1073741824,TB:1099511627776};
 var RATES={'B/s':1,'KB/s':1024,'MB/s':1048576,'GB/s':1073741824,'KBps':1024,'MBps':1048576};
@@ -400,7 +399,8 @@ var t=setInterval(function(){
   })();
 },100);
 })();"#;
-    JS.replace("__PORT__", &crate::api::PORT.to_string())
+    // 基址取「实际在听的回环地址」（IPv4 或 IPv6），不写死 127.0.0.1。
+    JS.replace("__BASE__", &crate::api::base_url())
 }
 
 /// 等页面 `document.readyState === 'complete'`（最多 `ms` 毫秒）。
@@ -529,6 +529,116 @@ pub fn run_headless(
     Ok(format!("frames={frames} usb_sent={sent}"))
 }
 
+/// 一次下发的回执摘要（只用于统计与日志，不参与控制逻辑）。
+struct Sent {
+    /// `ok` / `timeout` / `exit` / `err` / `other`（见 `live_frame::parse_ack`）
+    kind: &'static str,
+    reason: Option<String>,
+    /// 本帧实际写出的字节数（含帧头）
+    bytes: usize,
+    /// 写 bulk OUT 耗时
+    write_ms: u64,
+    /// 等 ACK 耗时（设备没回就是管道超时值）
+    ack_ms: u64,
+}
+
+/// 下发观测统计（**只用于日志**，不参与任何控制逻辑）。
+///
+/// 为什么要有：现场出现过「跑一两个小时后黑屏、自动回默认素材，日志里一条错误都没有」。
+/// 原因是旧代码把每帧的 ACK 直接丢掉（`let _ = read(256)?`），而"画面没动"的帧也会算一次
+/// 成功下发，于是「失败了多少帧、ACK 是 ok 还是 err、设备还有没有在回话」全都没有痕迹。
+/// 这里每 10s 打一条增量统计，让「设备什么时候开始不回话」在日志里直接可读。
+#[derive(Default)]
+struct TxStats {
+    /// 本区间（自上次统计以来）的计数
+    frames: u64,
+    sent: u64,
+    skip: u64,
+    fail: u64,
+    bytes: u64,
+    write_ms: u64,
+    ack_ms: u64,
+    ack_ok: u64,
+    ack_timeout: u64,
+    ack_bad: u64,
+    black: u64,
+    last: Option<Instant>,
+    last_fail_warn: Option<Instant>,
+    last_ack_warn: Option<Instant>,
+}
+
+impl TxStats {
+    /// 限流：同类告警最多 5s 一条（异常持续时不能让日志被刷爆，计数看 stats 行）。
+    fn warn_throttled(slot: &mut Option<Instant>, now: Instant, msg: &str) {
+        let due = match *slot {
+            None => true,
+            Some(t) => now.duration_since(t) >= Duration::from_secs(5),
+        };
+        if due {
+            *slot = Some(now);
+            crate::logging::warn(msg);
+        }
+    }
+
+    fn log_if_due(&mut self, now: Instant) {
+        let due = match self.last {
+            None => true,
+            Some(t) => now.duration_since(t) >= Duration::from_secs(10),
+        };
+        if !due {
+            return;
+        }
+        let span = self
+            .last
+            .map(|t| now.duration_since(t).as_secs_f64())
+            .unwrap_or(0.0);
+        self.last = Some(now);
+        if span <= 0.0 {
+            return;
+        }
+        let avg = |total: u64, n: u64| {
+            if n == 0 {
+                0.0
+            } else {
+                total as f64 / n as f64
+            }
+        };
+        crate::logging::info(&format!(
+            "[stats] {:.0}s 帧={} 发={} 跳过={} 失败={} 帧率={:.1}fps 平均帧={:.0}B 写={:.1}ms ACK={:.1}ms ACK(ok={},超时={},异常={}) 黑帧={}",
+            span,
+            self.frames,
+            self.sent,
+            self.skip,
+            self.fail,
+            self.frames as f64 / span,
+            avg(self.bytes, self.sent),
+            avg(self.write_ms, self.sent),
+            avg(self.ack_ms, self.sent),
+            self.ack_ok,
+            self.ack_timeout,
+            self.ack_bad,
+            self.black,
+        ));
+        // 区间计数清零（累计量在调用方的 frames/sent 里）
+        self.frames = 0;
+        self.sent = 0;
+        self.skip = 0;
+        self.fail = 0;
+        self.bytes = 0;
+        self.write_ms = 0;
+        self.ack_ms = 0;
+        self.ack_ok = 0;
+        self.ack_timeout = 0;
+        self.ack_bad = 0;
+        self.black = 0;
+    }
+}
+
+/// 整帧是否全黑（RGB565 大端，全 0）。抽样即可：真·黑帧是整片 0，误报代价只是一行日志。
+fn looks_black(rgb565: &[u8]) -> bool {
+    rgb565.iter().step_by(256).all(|&b| b == 0)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
     mut on_frame: F,
@@ -565,16 +675,25 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
     // USB（拿不到就只预览、不下发）。
     // `has_usb` = 接管成功（**新开或复用同一台都算**）；`link_gen` = 仅当本轮**自己新打开**时才是
     // `Some(gen)`（收尾只关这一代，避免误关新一轮的链路）。
-    let (has_usb, link_gen) = match UsbLink::open(serial, w, h) {
-        Ok(g) => {
-            crate::logging::info(&format!("USB 已接管 +{}ms", t0.elapsed().as_millis()));
-            (true, g)
-        }
-        Err(e) => {
-            crate::logging::warn(&format!("USB 不可用，仅预览：{e}"));
-            (false, None)
-        }
-    };
+    // 接管放到**阻塞线程**里做：`UsbLink::open` 内部是同步 USB / HTTP 调用（含移交重试，
+    // 最坏受 `OPEN_BUDGET` 约束）。直接在 async 任务里跑会占住一个 tokio worker，
+    // 几次并发就能把运行时拖垮 —— 那时所有 invoke 都不返回，界面就是「死机」。
+    let (ow, oh) = (w, h);
+    let (mut has_usb, link_gen) =
+        match tauri::async_runtime::spawn_blocking(move || UsbLink::open(serial, ow, oh)).await {
+            Ok(Ok(g)) => {
+                crate::logging::info(&format!("USB 已接管 +{}ms", t0.elapsed().as_millis()));
+                (true, g)
+            }
+            Ok(Err(e)) => {
+                crate::logging::warn(&format!("USB 不可用，仅预览：{e}"));
+                (false, None)
+            }
+            Err(e) => {
+                crate::logging::warn(&format!("USB 接管任务异常，仅预览：{e}"));
+                (false, None)
+            }
+        };
     // 任何退出路径都释放设备（只释放**本轮自己打开**的那一代）
     let _link_guard = LinkGuard(link_gen);
     // 接管尝试已结束（无论成败）：前端可以安全读信息了（成功则复用句柄、失败则自己开）
@@ -588,26 +707,33 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
     let mut sent = 0u64;
     let mut frames = 0u64;
     let mut still = 0u32; // 连续「画面没动」的帧数（静止退避用）
+    let mut st = TxStats::default();
+    let mut black_warned = false;
     let mut next_send = std::time::Instant::now();
     let start = std::time::Instant::now();
     let mut req_id = cdp.cmd("Page.captureScreenshot", shot_params()).await?;
 
-    loop {
+    // 退出原因带出循环：日志里必须能区分「用户停止 / CDP 断开 / 出错」。
+    // 旧版只有一个 `管线退出 frames=...`，事后完全看不出是不是断联。
+    let reason: &str = loop {
         if cancel.load(Ordering::SeqCst) {
-            break;
+            break "用户停止";
         }
         if let Some(secs) = seconds {
             if start.elapsed().as_secs_f64() > secs {
-                break;
+                break "到达运行时长";
             }
         }
         // 等这一张的响应（其间的事件丢掉）；select 让 stop() 立刻生效
         let data = tokio::select! {
             r = wait_result(&mut cdp, req_id) => match r {
                 Some(d) => d,
-                None => { eprintln!("[dbg] cdp 关闭或出错"); break; }
+                None => {
+                    crate::logging::warn("CDP 收帧通道关闭（渲染进程可能已崩溃/被回收）");
+                    break "CDP 断开";
+                }
             },
-            _ = wait_cancel(cancel.clone()) => break,
+            _ = wait_cancel(cancel.clone()) => break "用户停止",
         };
 
         let now = std::time::Instant::now();
@@ -620,7 +746,11 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
             let png = render::decode_b64(&data)?;
             let (rgb565, fw, fh) = render::png_to_rgb565(&png)?;
             if fw != w || fh != h {
-                eprintln!("[dbg] 丢弃 {fw}x{fh} 帧");
+                TxStats::warn_throttled(
+                    &mut st.last_fail_warn,
+                    now,
+                    &format!("丢弃尺寸不符的帧 {fw}x{fh}（期望 {w}x{h}）"),
+                );
             } else {
                 // 旋转/息屏之后设备会清屏回默认背景，脏区差分补不回来 → 强制整屏重发
                 if FORCE_FULL.swap(false, Ordering::SeqCst) {
@@ -639,22 +769,72 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
                 } else {
                     still += 1;
                 }
+                if looks_black(&rgb565) {
+                    st.black += 1;
+                    if !black_warned {
+                        black_warned = true;
+                        crate::logging::warn("抓到全黑帧（面板白屏，或渲染进程刚重启）");
+                    }
+                }
                 if has_usb {
                     let r = with_link(|u| match &rects {
                         None => u.send_full(&rgb565),
                         Some(rs) => u.send_rects(&rgb565, fw as usize, rs),
                     });
                     match r {
-                        Ok(()) => {
+                        Ok(Some(s)) => {
                             sent += 1;
                             prev = rgb565;
+                            st.sent += 1;
+                            st.bytes += s.bytes as u64;
+                            st.write_ms += s.write_ms;
+                            st.ack_ms += s.ack_ms;
+                            match s.kind {
+                                "ok" => st.ack_ok += 1,
+                                "timeout" => {
+                                    st.ack_timeout += 1;
+                                    TxStats::warn_throttled(
+                                        &mut st.last_ack_warn,
+                                        now,
+                                        "设备未回 ACK（画面可能已不在 LIVE 模式）",
+                                    );
+                                }
+                                _ => {
+                                    st.ack_bad += 1;
+                                    let reason = s.reason.clone().unwrap_or_default();
+                                    TxStats::warn_throttled(
+                                        &mut st.last_ack_warn,
+                                        now,
+                                        &format!("设备回执异常：{}（{reason}）", s.kind),
+                                    );
+                                }
+                            }
                         }
-                        Err(e) => eprintln!("[pipeline] USB 下发失败：{e}"),
+                        // 画面没动：`send_rects` 直接返回，一个字节都没发（USB 流量为零）
+                        Ok(None) => st.skip += 1,
+                        Err(e) => {
+                            st.fail += 1;
+                            // **必须进日志文件**：旧版这里是 eprintln，release 无控制台 → 断联零痕迹
+                            TxStats::warn_throttled(
+                                &mut st.last_fail_warn,
+                                now,
+                                &format!("USB 下发失败（仍在重试）：{e}"),
+                            );
+                            // 设备被拔掉：句柄已失效，继续每帧重试只会让 `with_link` 一直占着
+                            // LINK 锁、并且每帧等满管道超时（3s）→ 轮询和其它命令全被拖住，
+                            // 界面表现为死机。立刻释放链路、退回「仅预览」，等用户重新插好。
+                            if link_unusable(&e) {
+                                crate::logging::warn(&format!("设备已断开，停止下发（仅预览）：{e}"));
+                                close_link();
+                                has_usb = false;
+                            }
+                        }
                     }
                 } else {
                     prev = rgb565;
                 }
                 frames += 1;
+                st.frames += 1;
                 if frames == 1 {
                     crate::logging::info(&format!(
                         "首帧已下发（usb_sent={sent}）+{}ms",
@@ -684,18 +864,27 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
                 _ = wait_cancel(cancel.clone()) => true,
             };
             if interrupted {
-                break;
+                break "用户停止";
             }
         }
-        req_id = cdp.cmd("Page.captureScreenshot", shot_params()).await?;
-    }
+        // 心跳统计：每 10s 一条。**它同时是"管线还活着"的证据** ——
+        // 日志里统计行突然中断，就说明循环卡在收帧或 USB 上。
+        st.log_if_due(std::time::Instant::now());
+        req_id = match cdp.cmd("Page.captureScreenshot", shot_params()).await {
+            Ok(id) => id,
+            Err(e) => {
+                crate::logging::warn(&format!("请求截屏失败：{e}"));
+                break "CDP 发送失败";
+            }
+        };
+    };
 
     // 收尾：只关**本轮自己打开的**那一代链路（若已被新一轮接管则不碰）
     if let Some(g) = link_gen {
         close_link_if_gen(g);
     }
     crate::logging::info(&format!(
-        "管线退出 frames={frames} usb_sent={sent} +{}ms",
+        "管线退出（{reason}）frames={frames} usb_sent={sent} +{}ms",
         t0.elapsed().as_millis()
     ));
     Ok((frames, sent))
@@ -713,7 +902,7 @@ async fn wait_result(cdp: &mut render::Cdp, id: u64) -> Option<String> {
         let m = cdp.recv().await?;
         if m.get("id").and_then(|x| x.as_u64()) == Some(id) {
             if let Some(err) = m.get("error") {
-                eprintln!("[pipeline] CDP 错误：{err}");
+                crate::logging::warn(&format!("CDP 错误：{err}"));
                 return None;
             }
             return Some(m["result"]["data"].as_str().unwrap_or("").to_string());
@@ -804,11 +993,33 @@ impl UsbLink {
 /// 全局唯一的已接管设备。
 pub static LINK: Mutex<Option<UsbLink>> = Mutex::new(None);
 
+/// 链路快照（**只给前端轮询用**，不参与任何 USB 操作）。
+///
+/// 为什么要单独存一份：`with_link` 是**持着 `LINK` 锁**做 USB 读写的，设备异常时单次可能
+/// 等到管道超时（3s）。前端的 `link_state` 每 120ms 查一次，如果也去抢 `LINK`，
+/// 就会有一堆任务堵在锁上把 tokio worker 占满 → 所有 invoke 一起卡住，界面表现为「死机」。
+/// 这里用原子量 + 一把只做 clone 的短锁，轮询永远不会被 USB 阻塞。
+static LINK_OPEN: AtomicBool = AtomicBool::new(false);
+static LINK_SN: Mutex<Option<String>> = Mutex::new(None);
+
+/// 更新链路快照（每次 `LINK` 变化后调用；只做一次 clone，不碰 USB）。
+fn publish_link_state(open: bool, serial: Option<String>) {
+    LINK_OPEN.store(open, Ordering::SeqCst);
+    *LINK_SN.lock().unwrap() = serial;
+}
+
 /// 串行化「打开设备」：**同一时刻只允许一次移交 + 打开**。
 /// 否则 `render_start` 返回后管线线程还在做 USB 接管，前端紧接着的 `device_info`
 /// 会看到 `link_open()==false` 也去开一次 → 两次并发 `CreateFileW` 撞 `ERROR_ACCESS_DENIED(5)`
 /// → 一方失败「USB 不可用，仅预览」，租约互相顶掉 → 切设备卡顿/丢帧。
 static OPEN_LOCK: Mutex<()> = Mutex::new(());
+
+/// 一次「接管设备」的总预算。超过就放弃并报错。
+///
+/// 为什么要有：向 GUI 申请移交是**重试 + 退避**的（8 次，最坏约 13.6s），之后还要轮询
+/// 「打开成功」最多 6s。设备被拔掉 / 租约卡住时，这二十来秒里界面一直停在「读取中」，
+/// 用户感知就是死机。给一个硬预算，宁可报错让用户重试，也不要长时间无响应。
+const OPEN_BUDGET: Duration = Duration::from_secs(8);
 
 /// 管线是否已经**尝试过**接管 USB（成功或失败都算）。前端据此避免和管线抢设备。
 static LINK_READY: AtomicBool = AtomicBool::new(false);
@@ -819,9 +1030,9 @@ static LINK_READY: AtomicBool = AtomicBool::new(false);
 /// 实时下发直接断掉。按代数隔离后，旧一轮的收尾会变成 no-op。
 static LINK_GEN: AtomicU64 = AtomicU64::new(0);
 
-/// 是否已接管设备。
+/// 是否已接管设备（**读快照，不抢 `LINK` 锁**）。
 pub fn link_open() -> bool {
-    LINK.lock().unwrap().is_some()
+    LINK_OPEN.load(Ordering::SeqCst)
 }
 
 /// 管线是否已经做过 USB 接管尝试（`render_start` 返回 ≠ USB 已就绪，需等这个）。
@@ -831,7 +1042,7 @@ pub fn link_ready() -> bool {
 
 /// 当前接管中的设备 SN（没接管则 None）。多设备下用来判断命令该发给哪台。
 pub fn link_serial() -> Option<String> {
-    LINK.lock().unwrap().as_ref().map(|l| l.serial.clone())
+    LINK_SN.lock().unwrap().clone()
 }
 
 /// 用共享设备执行一段操作。
@@ -839,6 +1050,14 @@ pub fn with_link<T>(f: impl FnOnce(&UsbLink) -> Result<T, String>) -> Result<T, 
     let g = LINK.lock().unwrap();
     let l = g.as_ref().ok_or("设备未接管")?;
     f(l)
+}
+
+/// 下发失败是否意味着「这条链路已经不能用了」：
+/// 设备物理断开（`[GONE]`），或链路已被释放（未接管 / 句柄已释放）。
+/// 命中就应停止下发并退回「仅预览」，不要对着一个废句柄每帧重试 —— 那样每帧都要等满
+/// 管道超时，且全程占着 LINK 锁，界面会被拖死。
+fn link_unusable(e: &str) -> bool {
+    winusb::is_gone(e) || e.contains("设备未接管") || e.contains("设备句柄已释放")
 }
 
 /// 接管设备（必要时先向 GUI 申请移交）。
@@ -851,6 +1070,7 @@ pub fn open_link(serial: Option<String>) -> Result<Option<u64>, String> {
 /// 释放设备（`UsbLink::Drop` 归还租约）。**无条件关**：用于「停止」/退出等确实要交还设备的场景。
 pub fn close_link() {
     let old = LINK.lock().unwrap().take();
+    publish_link_state(false, None);
     drop(old); // 出锁再析构：归还租约要走一次 HTTP
 }
 
@@ -865,6 +1085,9 @@ pub fn close_link_if_gen(gen_id: u64) -> bool {
         }
     };
     let hit = old.is_some();
+    if hit {
+        publish_link_state(false, None);
+    }
     drop(old);
     hit
 }
@@ -896,6 +1119,9 @@ fn start_keepalive(lease_id: String, serial: String) {
     *KA_STOP.lock().unwrap() = Some((lease_id.clone(), stop.clone()));
     std::thread::spawn(move || {
         let mut first = true;
+        // 连续失败次数：**去重 + 升级**。每 20s 一条同样的 WARN 会在几小时里刷满日志，
+        // 反而把真正的断联证据挤掉；这里只在第 1 次、每 3 次（60s）记一条，≥3 次升为 ERROR。
+        let mut fails = 0u32;
         loop {
             // 每 100ms 查一次停止信号，够 20s 就续期（停止最多延迟 100ms）
             for _ in 0..200 {
@@ -904,16 +1130,42 @@ fn start_keepalive(lease_id: String, serial: String) {
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
-            match handoff::handoff_keepalive(&lease_id, &serial) {
-                Ok(v) => {
-                    if v.get("ok").and_then(|b| b.as_bool()) == Some(false) {
-                        crate::logging::warn(&format!("租约续期被拒：{v}"));
-                    } else if first {
+            let outcome = match handoff::handoff_keepalive(&lease_id, &serial) {
+                Ok(v) if v.get("ok").and_then(|b| b.as_bool()) != Some(false) => Ok(()),
+                Ok(v) => Err(format!("被拒：{v}")),
+                Err(e) => Err(format!("请求失败：{e}")),
+            };
+            match outcome {
+                Ok(()) => {
+                    if first {
                         first = false;
                         crate::logging::info("租约续期正常（keepalive）");
+                    } else if fails > 0 {
+                        crate::logging::info(&format!("租约续期已恢复（此前连续失败 {fails} 次）"));
+                    }
+                    fails = 0;
+                }
+                Err(why) => {
+                    fails += 1;
+                    if fails == 1 || fails % 3 == 0 {
+                        let msg = format!(
+                            "租约续期{why}（连续 {fails} 次，租约 {}s 后过期）",
+                            fails * 20
+                        );
+                        if fails >= 3 {
+                            crate::logging::error(&msg);
+                        } else {
+                            crate::logging::warn(&msg);
+                        }
+                    }
+                    // 6 次 = 120s = 租约 TTL 已过：GUI 现在可以合法抢回设备，
+                    // 再写下去只会拿到「拒绝访问」。给出唯一有效的处理办法。
+                    if fails == 6 {
+                        crate::logging::error(
+                            "租约已过期：GUI 可能已抢回设备。请点「停止」再点「确定」重新接管（否则只能看预览）",
+                        );
                     }
                 }
-                Err(e) => crate::logging::warn(&format!("租约续期失败：{e}")),
             }
         }
     });
@@ -989,8 +1241,9 @@ impl UsbLink {
             return Err(format!("设备 {} 正在接管中，无法接管 {}", cur.serial, target));
         }
 
-        // GUI 没占着设备：直接接管，省掉一次移交（GUI 409/429 多半出在这里）
-        if !gui || (!gui_connected && !gui_busy) {
+        // GUI 没占着设备（或根本没运行）：直接接管，省掉一次移交（GUI 409/429 多半出在这里）
+        let gui_idle = !gui || (!gui_connected && !gui_busy);
+        if gui_idle {
             match winusb::find_by_serial(&target) {
                 Ok(dev) => {
                     crate::logging::info(if gui {
@@ -1001,14 +1254,17 @@ impl UsbLink {
                     let gen_id = LINK_GEN.fetch_add(1, Ordering::SeqCst) + 1;
                     *LINK.lock().unwrap() = Some(UsbLink {
                         dev: Some(dev),
-                        serial: target,
+                        serial: target.clone(),
                         lease: None,
                         gen_id,
                     });
+                    publish_link_state(true, Some(target));
                     return Ok(Some(gen_id));
                 }
-                Err(e) if !gui => return Err(e),
-                Err(e) => crate::logging::warn(&format!("直接接管失败，改走移交：{e}")),
+                // GUI 也说没连着、本地又打不开 → 这台设备**确实不在了**（多半已被拔掉）。
+                // **必须立刻返回**：否则会掉进下面的移交重试（8 次退避 ≈ 13.6s，再加 6s 轮询），
+                // 这段时间界面一直停在「读取中」，用户看到的就是卡死。
+                Err(e) => return Err(format!("设备已断开或不可用：{e}")),
             }
         }
 
@@ -1017,9 +1273,15 @@ impl UsbLink {
             crate::logging::info(&format!("USB 移交：target={target}（GUI 在跑）"));
             // 移交要重试：GUI 可能刚被别的操作占着，或上一次租约还没释放（429）
             let r = {
+                // 总预算：GUI 回什么都别耗太久（这段时间界面一直停在「读取中」）
+                let deadline = std::time::Instant::now() + OPEN_BUDGET;
                 let mut last = String::new();
                 let mut ok = None;
                 for attempt in 0..8u64 {
+                    if std::time::Instant::now() >= deadline {
+                        last = format!("{last}（接管总耗时超过 {}s，放弃）", OPEN_BUDGET.as_secs());
+                        break;
+                    }
                     match handoff::handoff_start(&target, &client_id, 120) {
                         Ok(x) => {
                             if x.get("ok").and_then(|b| b.as_bool()) == Some(true) {
@@ -1038,7 +1300,11 @@ impl UsbLink {
                         ""
                     };
                     crate::logging::warn(&format!("USB 移交重试 {}/8：{last}{hint}", attempt + 1));
-                    std::thread::sleep(Duration::from_millis(300 + 400 * attempt));
+                    let wait = Duration::from_millis(300 + 400 * attempt);
+                    if std::time::Instant::now() + wait >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(wait);
                 }
                 match ok {
                     Some(x) => x,
@@ -1055,7 +1321,8 @@ impl UsbLink {
                 match winusb::find_by_serial(&target) {
                     Ok(d) => break Ok(d),
                     Err(e) => {
-                        if t0.elapsed() > Duration::from_secs(6) {
+                        // 3s 足够 GUI 真正放开设备（通常 100–300ms）；再长只会让界面白等
+                        if t0.elapsed() > Duration::from_secs(3) {
                             break Err(e);
                         }
                         std::thread::sleep(Duration::from_millis(100));
@@ -1081,10 +1348,11 @@ impl UsbLink {
             let gen_id = LINK_GEN.fetch_add(1, Ordering::SeqCst) + 1;
             *LINK.lock().unwrap() = Some(UsbLink {
                 dev: Some(dev),
-                serial: target,
+                serial: target.clone(),
                 lease,
                 gen_id,
             });
+            publish_link_state(true, Some(target));
             return Ok(Some(gen_id));
         }
 
@@ -1092,11 +1360,23 @@ impl UsbLink {
         Err("设备被 GUI 占用且移交失败".to_string())
     }
 
-    fn send_full(&self, rgb565: &[u8]) -> Result<(), String> {
+    fn send_full(&self, rgb565: &[u8]) -> Result<Option<Sent>, String> {
         let f = live_frame::frame_full(rgb565);
+        let bytes = f.len();
+        let t0 = Instant::now();
         self.dev()?.write(&f)?;
-        let _ = self.dev()?.read(256)?;
-        Ok(())
+        let write_ms = t0.elapsed().as_millis() as u64;
+        // ACK **不能丢**：设备自己退出 LIVE 时，只有这里能看出来（`LIVE,exit` / `LIVE,err`）。
+        let raw = self.dev()?.read(256)?;
+        let ack_ms = t0.elapsed().as_millis() as u64 - write_ms;
+        let (kind, reason) = live_frame::parse_ack(raw.as_deref());
+        Ok(Some(Sent {
+            kind,
+            reason,
+            bytes,
+            write_ms,
+            ack_ms,
+        }))
     }
 
     fn send_rects(
@@ -1104,9 +1384,10 @@ impl UsbLink {
         frame: &[u8],
         w: usize,
         rects: &[(usize, usize, usize, usize)],
-    ) -> Result<(), String> {
+    ) -> Result<Option<Sent>, String> {
         if rects.is_empty() {
-            return Ok(());
+            // 画面没动：**一个字节都不发**。返回 `None` 让统计能区分「跳过」和「发了」。
+            return Ok(None);
         }
         let f = if rects.len() == 1 {
             let (x, y, rw, rh) = rects[0];
@@ -1122,9 +1403,20 @@ impl UsbLink {
                 .collect();
             live_frame::frame_batch(&regions)
         };
+        let bytes = f.len();
+        let t0 = Instant::now();
         self.dev()?.write(&f)?;
-        let _ = self.dev()?.read(256)?;
-        Ok(())
+        let write_ms = t0.elapsed().as_millis() as u64;
+        let raw = self.dev()?.read(256)?;
+        let ack_ms = t0.elapsed().as_millis() as u64 - write_ms;
+        let (kind, reason) = live_frame::parse_ack(raw.as_deref());
+        Ok(Some(Sent {
+            kind,
+            reason,
+            bytes,
+            write_ms,
+            ack_ms,
+        }))
     }
 }
 

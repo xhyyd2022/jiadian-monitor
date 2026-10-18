@@ -74,7 +74,8 @@ log/               运行日志（自动创建）
 WinUSB 增量下发 → 设备屏
 ```
 
-- 程序自身起一个本地 HTTP 服务（`127.0.0.1:8766`）：`/metrics`（规范单位指标）、`/units`、`/health`。
+- 程序自身起一个本地 HTTP 服务（仅回环，默认端口 8766；`127.0.0.1` / `localhost` / `[::1]` 均可）：
+  `/metrics`（规范单位指标）、`/units`、`/health` 等，`GET /` 是接口索引。
   面板里的自取脚本每秒拉一次 `/metrics`，按 `data-unit` 换算后喂给 `__setSlot`。
 - 与官方上位机共用设备时，通过 `/usb/handoff/start|keepalive|finish` 借用 USB 使用权（租约 120s，程序每 20s 续期）。
 - 设备协议见 `src-tauri/src/live_frame.rs`、`device.rs`、`winusb.rs`。
@@ -99,7 +100,7 @@ src-tauri/              Rust 后端
     lhws_install.rs     LHS 检测 / 下载 / 校验 / 安装
     metrics.rs          指标组装（含 Win32 磁盘 / 网络 / 开机时长）
     units.rs            单位换算
-    api.rs              本地 HTTP API（127.0.0.1:8766）
+    api.rs              本机数据 API（仅回环，8766；IPv4 + IPv6 双监听）
     tray.rs / single.rs 托盘、单实例
   capabilities/         窗口权限
 ```

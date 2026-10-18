@@ -1,6 +1,6 @@
 [package]
 name = "jiaidian-monitor"
-version = "0.5.0"
+version = "0.7.0"
 description = "把本机实时硬件数据（CPU / 内存 / 磁盘 / 网络 / GPU / 温度 / 风扇）通过 USB 推送到佳点（jiaidian）V1P / V2 小屏设备的 Windows 桌面监控程序"
 authors = ["jiaidian-monitor contributors"]
 edition = "2024"

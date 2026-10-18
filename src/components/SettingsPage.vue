@@ -10,6 +10,7 @@ const {
   closeToTray,
   devtools,
   logging,
+  logLevel,
   highFps,
   hybridCompat,
   settingsError,
@@ -135,8 +136,11 @@ onMounted(() => {
 
 <template>
   <div>
-    <p v-if="settingsSaving" class="hint" role="status" aria-live="polite">正在保存设置…</p>
-    <p v-if="settingsError" class="err" role="alert">{{ settingsError }}</p>
+    <!-- 保存状态常驻一行：v-if 会让每次改设置时整页上下跳一下 -->
+    <div class="savebar" role="status" aria-live="polite">
+      <span v-if="settingsSaving" class="hint">正在保存设置…</span>
+      <span v-else-if="settingsError" class="err">{{ settingsError }}</span>
+    </div>
     <button v-if="!settingsReady && settingsError" @click="loadSettings">重新读取设置</button>
     <div class="card">
       <h2><Icon icon="line-md:play" />启动</h2>
@@ -195,9 +199,20 @@ onMounted(() => {
           <input type="checkbox" v-model="logging" />
         </label>
       </div>
+      <!-- 级别只在开启日志时才有意义：关掉时整行隐藏，避免出现「选了却不生效」的选项 -->
+      <div v-if="logging" class="row">
+        <span class="lbl">日志级别</span>
+        <select v-model="logLevel" class="lv">
+          <option value="info">全部</option>
+          <option value="warn">警告及以上</option>
+          <option value="error">仅错误</option>
+        </select>
+      </div>
       <p class="hint">
-        开启时把运行日志写进 <code>log/jiaidian.log</code>（单文件上限 100 KB，超过轮转），
-        排查面板切换卡顿 / 接管失败时用。关闭后不再写日志，省掉这部分磁盘写入与内存开销。
+        开启时把运行日志写进 <code>log/jiaidian.log</code>（单文件上限 1 MB，超过轮转成
+        <code>.log.1</code>）。三个级别是「门槛」不是分类：全部 = 普通/警告/错误都记、
+        警告及以上 = 只记警告与错误、仅错误 = 只记错误。排查面板切换卡顿 / 接管失败 /
+        长时间断联时用；关闭后不再写日志，省掉这部分磁盘写入与内存开销。
       </p>
     </div>
 
@@ -263,8 +278,10 @@ onMounted(() => {
         <button @click="refreshLhws" :disabled="lhwsBusy">重新检测</button>
         <button v-if="lhws?.installed" class="danger" @click="uninstallLhws" :disabled="lhwsBusy">卸载</button>
       </div>
-      <p v-if="lhws && !lhwsBusy" class="hint">{{ stateHint(lhws) }}</p>
-      <p v-if="lhwsMsg" class="hint">{{ lhwsMsg }}</p>
+      <!-- 两行状态常驻（空内容也占位）：重新检测时状态文案会反复出现/消失，
+           卡片高度一跳动整页就跟着动 -->
+      <p class="hint keep">{{ lhws && !lhwsBusy ? stateHint(lhws) : "" }}</p>
+      <p class="hint keep">{{ lhwsMsg }}</p>
       <p class="hint">
         第三方开源组件 {{ lhws?.version }}（{{ lhws?.license }}）·
         <a @click="openUrl(lhws?.source || '')">来源</a> ·

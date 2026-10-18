@@ -433,7 +433,9 @@ pub fn restart() -> Result<serde_json::Value, String> {
             180_000,
         )?;
         if rc != 0 {
-            crate::logging::warn(&format!("提权重启命令退出码 {rc}（可能服务本来就是停止的，属正常）"));
+            // `net stop` 对"本来就没在跑"的服务会返回非 0，但 `&` 之后 `net start` 照样执行。
+            // 这是预期内的正常路径，不是警告：留在 warn 级只会让「仅警告及以上」档出现假报警。
+            crate::logging::info(&format!("提权重启命令退出码 {rc}（服务本来可能是停止的，属正常）"));
         }
     }
     if wait_publishing() {
@@ -587,7 +589,9 @@ pub fn install() -> Result<serde_json::Value, String> {
         None => {
             let p = cache_path();
             if let Err(e) = download(&p) {
-                crate::logging::warn(&format!("内置下载失败（{e}），改用 curl 兜底"));
+                // 内置 HTTP 客户端失败 → 走系统 curl，这是设计好的回退链，属正常路径。
+                // 真正失败会在 download_with_curl 里以 Err 抛出（调用方负责报错）。
+                crate::logging::info(&format!("内置下载失败（{e}），改用 curl 兜底"));
                 download_with_curl(&p)?;
             }
             p

@@ -1,83 +1,163 @@
-//! 本地指标 API：把「数据拿好之后的样子」（23 项基础指标）以 HTTP 暴露给面板网页。
+//! 本机数据 API —— **只监听回环地址，不做鉴权**。
 //!
-//! 面板 HTML 不需要被注入数据，自己 `fetch` 即可：
-//! ```js
-//! const data = await (await fetch("http://127.0.0.1:8766/metrics")).json();
-//! for (const m of data) {
-//!   const el = document.querySelector(`[data-slot="${m.key}"]`);
-//!   if (el) el.textContent = m.text;
-//! }
-//! ```
+//! 目的：把后端已有的数据统一用一套只读 HTTP 接口暴露出来，本机任何程序
+//! （面板素材、调试脚本、第三方工具）都能直接取，不必各自去开 USB / 读共享内存 / 解析日志。
 //!
-//! - `GET /metrics` → `BasicMetric[]`（JSON，UTF-8）
-//! - `GET /units`   → `{ mode, units }`（当前单位设置；注入脚本每秒拉一次 → 改完立刻生效）
-//! - `GET /health`  → `ok`
-//! - `POST /app/show` → 唤起主窗口（第二实例启动时用）
-//! - `POST /app/quit` → 归还设备后优雅退出（编译脚本先调它，避免强杀留下租约）
+//! **为什么可以免鉴权**：只 bind 回环地址（IPv4 `127.0.0.1` + IPv6 `::1`），外网根本
+//! 连不上；且接口基本只读，唯二的两个 POST 只作用于本程序自身（唤起窗口 / 退出）。
 //!
-//! 只监听 `127.0.0.1`（不对外），带 `Access-Control-Allow-Origin: *`
-//! （面板是 `file://` 页面，origin 为 null）。
+//! **不写死 `127.0.0.1`**：`localhost` 在双栈机器上可能优先解析成 `::1`，只绑 IPv4 会让
+//! `localhost` / `[::1]` 打不开；所以 IPv4 与 IPv6 回环**各绑一个监听**，两种写法都能连。
+//!
+//! 端点（`GET /` 返回同一份自描述索引）：
+//! - `GET  /`          → 接口索引
+//! - `GET  /version`   → `{ "version": "x.y.z" }`
+//! - `GET  /health`    → `ok`
+//! - `GET  /metrics`   → `BasicMetric[]`（23 项基础指标，规范单位）
+//! - `GET  /units`     → `{ mode, units }`
+//! - `GET  /settings`  → 全部设置项
+//! - `GET  /devices`   → 设备列表（本地 WinUSB 枚举 + 上位机富化）
+//! - `GET  /link`      → `{ open, ready, serial }`
+//! - `GET  /themes`    → 素材主题列表
+//! - `POST /app/show`  → 唤起主窗口
+//! - `POST /app/quit`  → 归还设备后优雅退出
+//!
+//! 面板是 `file://` 页面（origin 为 null），所以响应统一带 `Access-Control-Allow-Origin: *`。
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-/// 面板网页调用本地 API 的端口。
+/// 本机数据 API 端口。
 pub const PORT: u16 = 8766;
+
+/// IPv4 回环是否绑定成功。
+static BOUND_V4: AtomicBool = AtomicBool::new(false);
+/// IPv6 回环是否绑定成功。
+static BOUND_V6: AtomicBool = AtomicBool::new(false);
+
+/// 回环候选地址：IPv4 `127.0.0.1`、IPv6 `::1`，外加 `localhost` 的解析结果（去重）。
+///
+/// 绑定、探测（单实例唤醒）都走这一份，避免任何一处写死 `127.0.0.1`：
+/// 只写 IPv4 的话，`localhost` 优先解析成 `::1` 的机器会连不上；反之亦然。
+pub fn loopback_addrs(port: u16) -> Vec<SocketAddr> {
+    let mut v: Vec<SocketAddr> = Vec::with_capacity(4);
+    push_unique(&mut v, SocketAddr::from((Ipv4Addr::LOCALHOST, port)));
+    push_unique(&mut v, SocketAddr::from((Ipv6Addr::LOCALHOST, port)));
+    // `localhost` 理论上就是上面两个之一，但 hosts 文件可能被改过，解析结果一并纳入。
+    if let Ok(it) = ("localhost", port).to_socket_addrs() {
+        for a in it {
+            push_unique(&mut v, a);
+        }
+    }
+    v
+}
+
+fn push_unique(v: &mut Vec<SocketAddr>, a: SocketAddr) {
+    if !v.contains(&a) {
+        v.push(a);
+    }
+}
+
+/// 服务基址（`http://127.0.0.1:8766` / `http://[::1]:8766`），取**实际在听的那个**。
+///
+/// 给注入脚本等自用方用：它们要拼 URL，又不该假设回环一定在 IPv4 上。
+pub fn base_url() -> String {
+    if BOUND_V4.load(Ordering::SeqCst) {
+        format!("http://127.0.0.1:{PORT}")
+    } else if BOUND_V6.load(Ordering::SeqCst) {
+        format!("http://[::1]:{PORT}")
+    } else {
+        // 还没绑上（或都失败）：给 IPv4 这个最常见的写法，调用方照旧会失败得可预期。
+        format!("http://127.0.0.1:{PORT}")
+    }
+}
+
+/// 多条监听之间的串行闸门：保持「同一时刻只处理一个请求」的原有语义。
+/// `/devices` 这类会碰 USB 的接口最坏要等控制管道超时，不希望两个地址同时打进来。
+static DISPATCH: Mutex<()> = Mutex::new(());
+
+const JSON: &str = "application/json; charset=utf-8";
+const TEXT: &str = "text/plain; charset=utf-8";
 
 pub fn spawn() {
     thread::spawn(|| {
-        let addr = format!("127.0.0.1:{PORT}");
-        let listener = match TcpListener::bind(&addr) {
-            Ok(l) => l,
+        // IPv4 与 IPv6 回环是两个不同的 socket（都不是通配地址），互不冲突。
+        // - IPv4 失败 → 端口被别的程序占了，只报错；
+        // - IPv6 失败 → 系统禁用了 IPv6 栈，降级成「只有 IPv4」，不算错误。
+        let v4 = SocketAddr::from((Ipv4Addr::LOCALHOST, PORT));
+        let v6 = SocketAddr::from((Ipv6Addr::LOCALHOST, PORT));
+
+        let l4 = match TcpListener::bind(v4) {
+            Ok(l) => {
+                BOUND_V4.store(true, Ordering::SeqCst);
+                Some(l)
+            }
             Err(e) => {
-                eprintln!("[api] 绑定 {addr} 失败：{e}");
-                return;
+                crate::logging::warn(&format!("本机 API 绑定 {v4} 失败：{e}"));
+                None
             }
         };
-        eprintln!("[api] 指标 API: http://{addr}/metrics");
-        for stream in listener.incoming().flatten() {
-            let _ = handle(stream);
+        let l6 = match TcpListener::bind(v6) {
+            Ok(l) => {
+                BOUND_V6.store(true, Ordering::SeqCst);
+                Some(l)
+            }
+            Err(e) => {
+                // 系统禁用 IPv6 时这是常态，且已经有 IPv4 在服务 → 属设计内的降级，记 info。
+                crate::logging::info(&format!(
+                    "本机 API 绑定 {v6} 失败（IPv6 可能被禁用，降级为仅 IPv4）：{e}"
+                ));
+                None
+            }
+        };
+        if l4.is_none() && l6.is_none() {
+            crate::logging::error("本机数据 API 未启动：回环地址全部绑定失败");
+            return;
+        }
+
+        crate::logging::info(&format!(
+            "本机数据 API: {}/  （127.0.0.1 / localhost / [::1] 均可访问）",
+            base_url()
+        ));
+        let mut handles = Vec::with_capacity(2);
+        if let Some(l) = l4 {
+            handles.push(thread::spawn(move || serve(l)));
+        }
+        if let Some(l) = l6 {
+            handles.push(thread::spawn(move || serve(l)));
+        }
+        for h in handles {
+            let _ = h.join();
         }
     });
 }
 
+/// 单条监听串行 accept。
+fn serve(listener: TcpListener) {
+    for stream in listener.incoming().flatten() {
+        let _ = handle(stream);
+    }
+}
+
 fn handle(mut s: TcpStream) -> std::io::Result<()> {
-    // 本地空连接不能永久占用串行API线程；不改变指标采样或并发模型。
+    // 本地空连接不能永久占用串行 API 线程；不改变指标采样或并发模型。
     s.set_read_timeout(Some(Duration::from_secs(2)))?;
     s.set_write_timeout(Some(Duration::from_secs(2)))?;
     let mut buf = [0u8; 4096];
     let n = s.read(&mut buf)?;
     let req = String::from_utf8_lossy(&buf[..n]);
-    let path = req
-        .lines()
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .unwrap_or("/");
+    let mut first = req.lines().next().unwrap_or("").split_whitespace();
+    let method = first.next().unwrap_or("GET").to_string();
+    let path = first.next().unwrap_or("/").to_string();
     let route = path.split('?').next().unwrap_or("/");
 
-    let (status, ctype, body) = match route {
-        "/metrics" => (
-            "200 OK",
-            "application/json; charset=utf-8",
-            serde_json::to_string(&crate::metrics::basic()).unwrap_or_else(|_| "[]".into()),
-        ),
-        "/health" => ("200 OK", "text/plain; charset=utf-8", "ok".to_string()),
-        "/units" => (
-            "200 OK",
-            "application/json; charset=utf-8",
-            crate::units::json(),
-        ),
-        "/app/show" => {
-            crate::show_main_window();
-            ("200 OK", "text/plain; charset=utf-8", "ok".to_string())
-        }
-        "/app/quit" => {
-            crate::request_quit();
-            ("200 OK", "text/plain; charset=utf-8", "quitting".to_string())
-        }
-        _ => ("404 Not Found", "text/plain; charset=utf-8", "not found".to_string()),
+    let (status, ctype, body) = {
+        let _serial = DISPATCH.lock().unwrap_or_else(|e| e.into_inner());
+        dispatch(&method, route)
     };
 
     let head = format!(
@@ -85,6 +165,8 @@ fn handle(mut s: TcpStream) -> std::io::Result<()> {
          Content-Type: {ctype}\r\n\
          Content-Length: {}\r\n\
          Access-Control-Allow-Origin: *\r\n\
+         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+         Access-Control-Allow-Headers: *\r\n\
          Cache-Control: no-store\r\n\
          Connection: close\r\n\r\n",
         body.as_bytes().len()
@@ -92,4 +174,88 @@ fn handle(mut s: TcpStream) -> std::io::Result<()> {
     s.write_all(head.as_bytes())?;
     s.write_all(body.as_bytes())?;
     s.flush()
+}
+
+fn dispatch(method: &str, route: &str) -> (&'static str, &'static str, String) {
+    // 跨域预检（面板 file:// 直接 fetch 用不到，但第三方网页工具会发）
+    if method == "OPTIONS" {
+        return ("204 No Content", TEXT, String::new());
+    }
+    match (method, route) {
+        ("GET", "/") => ("200 OK", JSON, index()),
+        ("GET", "/version") => (
+            "200 OK",
+            JSON,
+            serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }).to_string(),
+        ),
+        ("GET", "/health") => ("200 OK", TEXT, "ok".to_string()),
+        ("GET", "/metrics") => (
+            "200 OK",
+            JSON,
+            serde_json::to_string(&crate::metrics::basic()).unwrap_or_else(|_| "[]".into()),
+        ),
+        ("GET", "/units") => ("200 OK", JSON, crate::units::json()),
+        ("GET", "/settings") => (
+            "200 OK",
+            JSON,
+            crate::settings::to_json(&crate::settings::current()).to_string(),
+        ),
+        ("GET", "/devices") => match crate::device_list_blocking() {
+            Ok(v) => ("200 OK", JSON, serde_json::Value::Array(v).to_string()),
+            Err(e) => (
+                "500 Internal Server Error",
+                JSON,
+                serde_json::json!({ "error": e }).to_string(),
+            ),
+        },
+        ("GET", "/link") => (
+            "200 OK",
+            JSON,
+            serde_json::json!({
+                "open": crate::pipeline::link_open(),
+                "ready": crate::pipeline::link_ready(),
+                "serial": crate::pipeline::link_serial(),
+            })
+            .to_string(),
+        ),
+        ("GET", "/themes") => (
+            "200 OK",
+            JSON,
+            serde_json::to_string(&crate::assets::list_themes()).unwrap_or_else(|_| "[]".into()),
+        ),
+        // 兼容旧调用：以前不区分方法，GET 也能唤起 / 退出
+        (_, "/app/show") => {
+            crate::show_main_window();
+            ("200 OK", TEXT, "ok".to_string())
+        }
+        (_, "/app/quit") => {
+            crate::request_quit();
+            ("200 OK", TEXT, "quitting".to_string())
+        }
+        _ => ("404 Not Found", TEXT, "not found".to_string()),
+    }
+}
+
+/// 自描述索引：让别的程序（或人）一眼看出有哪些数据可取。
+fn index() -> String {
+    serde_json::json!({
+        "name": "jiaidian-monitor local data API",
+        "version": env!("CARGO_PKG_VERSION"),
+        "note": "只监听回环地址（127.0.0.1 / [::1]，localhost 亦可），仅本机可访问，因此不做鉴权",
+        "base": base_url(),
+        "endpoints": [
+            { "method": "GET",  "path": "/",         "desc": "本索引" },
+            { "method": "GET",  "path": "/version",  "desc": "版本号" },
+            { "method": "GET",  "path": "/health",   "desc": "存活检查（返回 ok）" },
+            { "method": "GET",  "path": "/metrics",  "desc": "23 项基础指标（规范单位）" },
+            { "method": "GET",  "path": "/units",    "desc": "单位设置 { mode, units }" },
+            { "method": "GET",  "path": "/settings", "desc": "全部设置项" },
+            { "method": "GET",  "path": "/devices",  "desc": "设备列表（本地枚举 + 上位机富化）" },
+            { "method": "GET",  "path": "/link",     "desc": "USB 接管状态 { open, ready, serial }" },
+            { "method": "GET",  "path": "/themes",   "desc": "素材主题列表" },
+            { "method": "POST", "path": "/app/show", "desc": "唤起主窗口" },
+            { "method": "POST", "path": "/app/quit", "desc": "归还设备后退出" }
+        ]
+    })
+    .to_string()
 }

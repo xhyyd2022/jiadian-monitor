@@ -1,21 +1,24 @@
-//! 简易文件日志：`log/jiaidian.log`，单文件上限 100 KB，超过就轮转成 `jiaidian.log.1`。
+//! 简易文件日志：`log/jiaidian.log`，单文件上限 1 MB，超过就轮转成 `jiaidian.log.1`。
 //!
 //! 目的：面板切换卡顿 / 需要点多次这类问题，光看 UI 无从下手，落到文件里才能追溯。
 //! 同时打到 stderr（CLI 直接可见）。
+//!
+//! **为什么是 1 MB**：排查「长时间运行后断联」时，每 10s 一条统计就要 ~140 B，
+//! 跑 2 小时 ≈ 100 KB —— 原来的 100 KB 上限会在最需要证据的时刻把前半段轮转掉。
 //!
 //! 目录解析与 `assets/` 一致：先看 cwd，再从 exe 所在目录逐级向上找 `log/`。
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use windows_sys::Win32::Foundation::SYSTEMTIME;
 use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 
 /// 单个日志文件上限。
-const MAX_BYTES: u64 = 100 * 1024;
+const MAX_BYTES: u64 = 1024 * 1024;
 
 static FILE: Mutex<Option<File>> = Mutex::new(None);
 static PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -23,6 +26,30 @@ static PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// 日志输出总开关。**默认开**（保持原有行为）；关闭后 [`line`] 直接返回——
 /// 不写文件、不打 stderr、不做 flush，也就不再产生任何日志相关的 I/O 与内存开销。
 static ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// 级别门槛（0 = 全部 / 1 = 警告及以上 / 2 = 仅错误）。低于门槛的行直接丢弃。
+///
+/// 只在总开关打开时才有意义：关掉日志时三个级别都不输出。
+static LEVEL: AtomicU8 = AtomicU8::new(0);
+
+/// 级别名 → 序号。未知按「全部」处理。
+fn rank(level: &str) -> u8 {
+    match level {
+        "WARN" => 1,
+        "ERROR" => 2,
+        _ => 0,
+    }
+}
+
+/// 设置级别门槛（`info` / `warn` / `error`，大小写不敏感；未知值按 `info`）。
+pub fn set_level(name: &str) {
+    let v = match name.trim().to_ascii_lowercase().as_str() {
+        "warn" | "warning" => 1,
+        "error" => 2,
+        _ => 0,
+    };
+    LEVEL.store(v, Ordering::Relaxed);
+}
 
 /// 当前是否允许输出日志。
 pub fn enabled() -> bool {
@@ -57,10 +84,12 @@ pub fn dir() -> Option<PathBuf> {
 
 /// 打开日志文件（幂等）。找不到 `log/` 就自己建一个。
 pub fn init() {
-    // 开关来自 `settings.ini`（`[app] logging`，默认开）。
-    if !crate::settings::current().logging {
+    // 开关与级别都来自 `settings.ini`（`[app] logging` / `[app] log_level`）。
+    let s = crate::settings::current();
+    if !s.logging {
         ENABLED.store(false, Ordering::Relaxed);
     }
+    set_level(&s.log_level);
     if !enabled() {
         return; // 关闭状态：不建目录、不建文件
     }
@@ -102,6 +131,10 @@ pub fn line(level: &str, msg: &str) {
     if !enabled() {
         return;
     }
+    // 级别门槛：`warn` 档不记 info 行，`error` 档只记错误
+    if rank(level) < LEVEL.load(Ordering::Relaxed) {
+        return;
+    }
     let text = format!("{} [{level}] {msg}\n", timestamp());
     eprint!("{text}");
     {
@@ -117,6 +150,40 @@ pub fn line(level: &str, msg: &str) {
         }
     }
     rotate_if_needed();
+}
+
+/// 直接追加一行，**不碰全局锁**（panic 钩子专用）。
+///
+/// panic 有可能发生在持锁期间，此时再用 `FILE.lock()` 会死锁 —— 那正是最需要日志的时刻。
+/// 这里每次重新打开文件追加，代价可忽略（只在 panic 时走一次）。
+fn direct_line(text: &str) {
+    // 用户关掉日志时连 panic 也不落盘（否则「关了还在写」与开关语义矛盾）。
+    // panic 属于 ERROR 级，级别门槛不会拦它，只有总开关能拦。
+    if !enabled() {
+        return;
+    }
+    let Some(dir) = dir() else { return };
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("jiaidian.log"))
+    {
+        let _ = f.write_all(format!("{} {text}\n", timestamp()).as_bytes());
+        let _ = f.flush();
+    }
+}
+
+/// 装 panic 钩子：把 panic 写进日志文件。
+///
+/// **为什么必须装**：日志里出现过「上一次会话直接消失、没有任何退出记录」的情况 ——
+/// 不装钩子时，Rust panic 只打到 stderr，而 release 是 GUI 子系统、没有控制台，
+/// 于是整个事件在文件里零痕迹，只能靠猜。
+pub fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        direct_line(&format!("[PANIC] {info}"));
+        default(info);
+    }));
 }
 
 fn rotate_if_needed() {

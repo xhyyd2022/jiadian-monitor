@@ -16,6 +16,9 @@ const silentStart = ref(false);
 const closeToTray = ref(true);
 /// 运行日志输出：关掉后不再写 `log/jiaidian.log`，省掉这部分磁盘 I/O。
 const logging = ref(true);
+/// 日志级别门槛：`info` 全部 / `warn` 只记警告与错误 / `error` 只记错误。
+/// **只在 `logging` 开启时才有意义**（关掉日志时界面不显示这一项）。
+const logLevel = ref<"info" | "warn" | "error">("info");
 /// 高刷模式：开 = 面板 / 预览 ~30fps；关 = 普通 ~10fps（省 CPU）。
 const highFps = ref(false);
 /// CPU 占用率来源：关闭用 LHS，开启用 PDH 自算，并在可用时输出 P/E 分组。
@@ -38,6 +41,7 @@ const unitDuration = ref(""); // 时长：秒 分 小时 天
 interface Settings {
   silentStart: boolean;
   logging: boolean;
+  logLevel: "info" | "warn" | "error";
   highFps: boolean;
   hybridCompat: boolean;
   theme: "dark" | "light";
@@ -51,7 +55,7 @@ interface Settings {
 }
 
 const settingRefs = {
-  theme, devtools, closeToTray, silentStart, logging, highFps, hybridCompat,
+  theme, devtools, closeToTray, silentStart, logging, logLevel, highFps, hybridCompat,
   unitMode, unitCapacity, unitRate, unitTemp, unitDuration,
 };
 const settingKeys = Object.keys(settingRefs) as (keyof Settings)[];
@@ -68,6 +72,7 @@ function snapshot(): Settings {
     closeToTray: closeToTray.value,
     silentStart: silentStart.value,
     logging: logging.value,
+    logLevel: logLevel.value,
     highFps: highFps.value,
     hybridCompat: hybridCompat.value,
     unitMode: unitMode.value,
@@ -86,6 +91,9 @@ function applySettings(s: Partial<Settings>) {
     if (typeof s.closeToTray === "boolean") closeToTray.value = s.closeToTray;
     if (typeof s.silentStart === "boolean") silentStart.value = s.silentStart;
     if (typeof s.logging === "boolean") logging.value = s.logging;
+    if (s.logLevel === "info" || s.logLevel === "warn" || s.logLevel === "error") {
+      logLevel.value = s.logLevel;
+    }
     if (typeof s.highFps === "boolean") highFps.value = s.highFps;
     if (typeof s.hybridCompat === "boolean") hybridCompat.value = s.hybridCompat;
     if (s.unitMode === "manual" || s.unitMode === "auto") unitMode.value = s.unitMode;
@@ -196,6 +204,7 @@ export function useSettings() {
     silentStart,
     closeToTray,
     logging,
+    logLevel,
     highFps,
     hybridCompat,
     settingsError,

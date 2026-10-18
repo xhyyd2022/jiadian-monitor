@@ -1,14 +1,12 @@
+/* ---------------- 主题变量 ----------------
+   **挂在 :root 而不是 .app 上**，三个原因：
+   ① `html` / `body` 也拿得到 `--bg`：首帧、窗口 resize、内容不满一屏时不会先露一层白底；
+   ② `color-scheme` 跟着 `:root.light` 走 —— 挂在 `.app` 上时 `<html>` 永远停在 dark，
+      `<select>` 的原生下拉列表 / 焦点环由 UA 按 color-scheme 绘制，就会「慢一拍」；
+   ③ 切换主题只改 `html.light` 一个 class，不必让整棵组件树重新匹配。
+   深色是默认（不带 class），浅色靠 `html.light`。 */
 :root {
   color-scheme: dark;
-}
-body {
-  margin: 0;
-  /* 全局禁止选中/复制 */
-  user-select: none;
-  -webkit-user-select: none;
-  cursor: default;
-}
-.app {
   /* 深色（默认） */
   --bg: #14161a;
   --side: #101216;
@@ -27,14 +25,8 @@ body {
   --r-xs: 4px;
   --r-sm: 6px;
   --r-md: 10px;
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  background: var(--bg);
-  color: var(--fg);
-  font-family: "Segoe UI", system-ui, sans-serif;
 }
-.app.light {
+:root.light {
   color-scheme: light;
   --bg: #f4f6f8;
   --side: #ffffff;
@@ -49,6 +41,37 @@ body {
   --danger: #dc2626;
   --ok: #059669;
   --warn: #d97706;
+}
+/* 主题切换的那一帧：**禁用所有过渡**。
+   不加这个，`button`（0.12s）和开关（0.15s）会渐变过去，而背景 / 卡片 / 文字
+   是瞬间变的 —— 视觉上就是「整体先变、按钮慢半拍」。尤其是刚点下去的那个按钮
+   自己还在渐变，最容易被察觉。用 !important 是因为 button / .sw input 的
+   transition 是给 hover 用的，这里必须压过它们。 */
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  transition: none !important;
+}
+html {
+  background: var(--bg);
+}
+body {
+  margin: 0;
+  /* 跟着主题走：WebView2 首帧 / 窗口拉伸时不会先露一层白 */
+  background: var(--bg);
+  color: var(--fg);
+  /* 全局禁止选中/复制 */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "Segoe UI", system-ui, sans-serif;
 }
 /* 自定义标题栏（原生标题栏已隐藏） */
 .titlebar {
@@ -224,10 +247,13 @@ body {
   padding: 2px 8px;
   font-size: 11px;
 }
-/* 设备切换下拉：贴右，紧挨「刷新」按钮（只显示 SN 尾号 + 机型） */
+/* 设备切换下拉：贴右，紧挨「刷新」按钮（只显示 SN 尾号 + 机型）
+   **宽度必须固定**：`max-width` 会让框随选中项文本（「无设备」/「4C18CF · V1P」）伸缩，
+   刷新设备时整行跟着左右抖动。 */
 .devsel {
   margin-left: auto;
-  max-width: 122px;
+  width: 122px;
+  flex: none;
   min-width: 0; /* 允许压缩，别把标题挤换行 */
   padding: 2px 6px;
   font-size: 11px;
@@ -350,6 +376,22 @@ button.danger {
   overflow-wrap: anywhere;
   word-break: normal;
 }
+/* 会**反复出现/消失**的提示（设备状态、下发结果）：预留一行高度。
+   否则提示一来一去，整张卡高度跳一下，左列最后一张卡（flex:1）跟着伸缩 → 界面抖动。 */
+.hint.keep {
+  min-height: 20px;
+}
+/* 设置页顶部「正在保存 / 保存失败」常驻一行：v-if 的 span 在，容器就得先占好高度，
+   否则每次点开关都先塌 0 再撑回 20px，整页设置项跟着上下跳一下。 */
+.savebar {
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+}
+.savebar .hint,
+.savebar .err {
+  margin: 0;
+}
 .preview img,
 .preview canvas {
   border: 1px solid var(--line);
@@ -357,8 +399,11 @@ button.danger {
   image-rendering: pixelated;
 }
 .ph {
+  /* 实际宽高由模板内联 style 给出（= 设备尺寸）；这里只是 CSS 兜底 */
   width: 320px;
   height: 240px;
+  max-width: 100%;
+  max-height: 100%;
   flex: none;
   display: flex;
   align-items: center;
@@ -452,6 +497,11 @@ code {
 .card.unit .row select {
   width: 96px;
 }
+/* 日志级别下拉要放得下「警告及以上」五个汉字（76px 会把它裁掉）；
+   固定宽度也避免切换级别时整行左右伸缩 */
+.row select.lv {
+  width: 108px;
+}
 /* 素材页 */
 .steps {
   margin: 0;
@@ -482,18 +532,27 @@ code {
   overflow-wrap: anywhere;
   word-break: normal;
 }
-/* 预览保持 320×240 原始像素（不放大）；卡片变宽时居中，两侧留白对称 */
+/* 预览保持 320×240 原始像素（不放大）；卡片变宽时居中，两侧留白对称。
+   **容器高度固定 240**：设备有 320×170 与 320×240 两种，若让容器跟着画布走，
+   切换/刷新设备时这一张卡就高/矮 70px，整页跟着跳（内容一旦超过视口，
+   左列「flex:1」的撑满就失效 → 所有卡片一起位移）。固定成能放下数值与文本的
+   那个尺寸（240），设备图在框内垂直居中，布局就与设备尺寸无关了。 */
 .preview {
   display: flex;
   justify-content: center;
-  align-items: flex-start;
+  align-items: center;
+  height: 240px;
+  flex: none;
 }
+/* 画布/占位块的实际尺寸由模板内联 style 给出（= 设备自报尺寸，V1P 320×170 / V2 320×240），
+   这里只做上限约束：容器固定 240 高，超出则等比收缩，**不能**写死 width/height，
+   否则 320×170 的图会被拉成 320×240（纵向拉伸）。 */
 .preview img,
 .preview canvas {
   display: block;
   flex: none;
-  width: 320px;
-  height: 240px;
+  max-width: 100%;
+  max-height: 100%;
   border-radius: var(--r-sm);
   image-rendering: pixelated;
 }

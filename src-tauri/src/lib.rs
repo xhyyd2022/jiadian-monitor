@@ -169,38 +169,54 @@ fn set_window_theme(app: tauri::AppHandle, dark: bool) {
 }
 
 /// 设备信息：SN / 能力(JED) / 电压 / 显示状态。
+///
+/// **必须 async + `spawn_blocking`**：内部要接管设备（可能向 GUI 申请移交并重试退避），
+/// 是同步阻塞调用。放在 tokio worker 上会占住运行时；设备被拔掉时更会把后续 invoke
+/// 一起拖住，界面表现为「死机」。丢到阻塞线程池后界面始终可响应，失败也能正常回错。
 #[tauri::command]
-fn device_info(serial: Option<String>) -> Result<serde_json::Value, String> {
-    device::info(serial)
+async fn device_info(serial: Option<String>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || device::info(serial))
+        .await
+        .map_err(|e| format!("读取设备信息失败：{e}"))?
 }
 
 /// 设亮度 0..=255（0 = 息屏）。
 #[tauri::command]
-fn device_set_brightness(serial: Option<String>, value: u8) -> Result<String, String> {
-    device::set_brightness(serial, value)
+async fn device_set_brightness(serial: Option<String>, value: u8) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || device::set_brightness(serial, value))
+        .await
+        .map_err(|e| format!("设置亮度失败：{e}"))?
 }
 
 /// 设旋转 0..=3。
 #[tauri::command]
-fn device_set_rotation(serial: Option<String>, value: u8) -> Result<String, String> {
-    device::set_rotation(serial, value)
+async fn device_set_rotation(serial: Option<String>, value: u8) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || device::set_rotation(serial, value))
+        .await
+        .map_err(|e| format!("设置旋转失败：{e}"))?
 }
 
 /// 跟随息屏 开/关。
 #[tauri::command]
-fn device_set_follow_off(serial: Option<String>, value: bool) -> Result<String, String> {
-    device::set_follow_off(serial, value)
+async fn device_set_follow_off(serial: Option<String>, value: bool) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || device::set_follow_off(serial, value))
+        .await
+        .map_err(|e| format!("设置跟随息屏失败：{e}"))?
 }
 
 /// 完整下发一次设备配置（亮度 + 旋转 + 跟随息屏），改任一项都调它。
 #[tauri::command]
-fn device_apply_config(
+async fn device_apply_config(
     serial: Option<String>,
     brightness: u8,
     rotation: u8,
     follow_off: bool,
 ) -> Result<serde_json::Value, String> {
-    device::apply_config(serial, brightness, rotation, follow_off)
+    tauri::async_runtime::spawn_blocking(move || {
+        device::apply_config(serial, brightness, rotation, follow_off)
+    })
+    .await
+    .map_err(|e| format!("下发配置失败：{e}"))?
 }
 
 /// 是否已设置开机自启动。
@@ -239,13 +255,17 @@ fn preview_subscribe(channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody
     pipeline::set_preview_channel(channel);
 }
 
-/// 枚举 WinUSB 设备（path + serial）。
+/// 枚举 WinUSB 设备（path + serial）。会逐个打开设备读 SN，属阻塞操作 → 丢阻塞线程池。
 #[tauri::command]
-fn usb_list() -> Result<Vec<serde_json::Value>, String> {
-    Ok(winusb::list_devices()?
-        .into_iter()
-        .map(|(p, sn)| json!({ "path": p, "serial": sn }))
-        .collect())
+async fn usb_list() -> Result<Vec<serde_json::Value>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        Ok(winusb::list_devices()?
+            .into_iter()
+            .map(|(p, sn)| json!({ "path": p, "serial": sn }))
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("枚举 USB 设备失败：{e}"))?
 }
 
 /// 设备列表：本地 WinUSB 物理枚举 + GUI `/usb/status` 的 `devices[]` 富化（尺寸 / 机型）。
@@ -253,7 +273,14 @@ fn usb_list() -> Result<Vec<serde_json::Value>, String> {
 /// 物理枚举保证「没点连接也能看到设备」；GUI 那份顺带给出 `panelWidth/Height` 与
 /// `hardwareVariant`，**不用逐台开 USB 读 JED** 就能知道是 320×240 还是 320×170。
 #[tauri::command]
-fn device_list() -> Result<Vec<serde_json::Value>, String> {
+async fn device_list() -> Result<Vec<serde_json::Value>, String> {
+    // 物理枚举要逐个开设备 + 问 GUI，都是阻塞调用 → 丢阻塞线程池，别占住 tokio worker
+    tauri::async_runtime::spawn_blocking(device_list_blocking)
+        .await
+        .map_err(|e| format!("扫描设备失败：{e}"))?
+}
+
+pub(crate) fn device_list_blocking() -> Result<Vec<serde_json::Value>, String> {
     let phys = winusb::list_devices().unwrap_or_default();
     let gui_devs: Vec<serde_json::Value> = handoff::status()
         .ok()
@@ -319,18 +346,24 @@ fn device_list() -> Result<Vec<serde_json::Value>, String> {
 
 /// 查询 GUI 的 `/usb/status`（GUI 未运行时返回 Err）。
 #[tauri::command]
-fn usb_gui_status() -> Result<serde_json::Value, String> {
-    handoff::status()
+async fn usb_gui_status() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(handoff::status)
+        .await
+        .map_err(|e| format!("查询上位机状态失败：{e}"))?
 }
 
 /// 走「移交 → 打开 → 发一帧全屏测试图 → 读回执 → 结束移交」验证 USB 下发。
 #[tauri::command]
-fn usb_test_pattern(
+async fn usb_test_pattern(
     serial: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
 ) -> Result<String, String> {
-    usb_test(serial, width.unwrap_or(320), height.unwrap_or(240))
+    tauri::async_runtime::spawn_blocking(move || {
+        usb_test(serial, width.unwrap_or(320), height.unwrap_or(240))
+    })
+    .await
+    .map_err(|e| format!("USB 测试失败：{e}"))?
 }
 
 /// 启动实时渲染管线（app 自带 WebView2 离屏窗口 → 差分 → USB 下发），每帧推 `preview` 事件。
@@ -343,7 +376,12 @@ async fn render_start(
     width: Option<u32>,
     height: Option<u32>,
 ) -> Result<String, String> {
-    pipeline::start(app, html, serial, width.unwrap_or(320), height.unwrap_or(240))
+    // `start` 内部有「等上一轮收尾 + 建离屏窗口 + 等 CDP 目标」的阻塞等待 → 丢阻塞线程池
+    tauri::async_runtime::spawn_blocking(move || {
+        pipeline::start(app, html, serial, width.unwrap_or(320), height.unwrap_or(240))
+    })
+    .await
+    .map_err(|e| format!("启动渲染失败：{e}"))?
 }
 
 /// 停止管线并等设备归还。返回给界面提示。
@@ -572,6 +610,9 @@ pub fn set_units_cli(spec: &str) -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     logging::init();
+    // panic 也要落到日志文件：release 是 GUI 子系统、没有控制台，
+    // 否则一次崩溃在日志里就是「上一条日志之后什么都没有」。
+    logging::install_panic_hook();
     logging::info("=== jiaidian-monitor 启动 ===");
     logging::info(&format!("数据源：{}", metrics::source_hint()));
     // 可选 CPU 自算控制器：关闭时不采样，默认 CPU 总值来自 LHS。

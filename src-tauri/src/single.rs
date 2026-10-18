@@ -30,19 +30,28 @@ pub fn acquire() -> bool {
 }
 
 /// 请已在跑的实例把窗口显示出来。返回是否把请求递出去了。
+///
+/// **不写死 `127.0.0.1`**：本机 API 同时听 IPv4 与 IPv6 回环，而 `localhost` 在双栈机器上
+/// 可能解析成 `::1`，所以按 `api::loopback_addrs()` 逐个试，任一把请求递出去即成功。
+/// 回环上被拒的连接会立刻返回（RST），不会把启动流程卡住。
 pub fn wake_existing() -> bool {
     use std::io::Write;
-    let addr = format!("127.0.0.1:{}", crate::api::PORT);
-    let Ok(sa) = addr.parse() else { return false };
-    let Ok(mut s) = std::net::TcpStream::connect_timeout(&sa, std::time::Duration::from_millis(800))
-    else {
-        return false;
-    };
-    let _ = s.set_write_timeout(Some(std::time::Duration::from_millis(800)));
-    s.write_all(
-        b"POST /app/show HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-    )
-    .is_ok()
+    for addr in crate::api::loopback_addrs(crate::api::PORT) {
+        let Ok(mut s) =
+            std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(800))
+        else {
+            continue;
+        };
+        let _ = s.set_write_timeout(Some(std::time::Duration::from_millis(800)));
+        // Host 头按实际目标写；IPv6 字面量必须带方括号，`SocketAddr` 的 Display 已自带。
+        let req = format!(
+            "POST /app/show HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        if s.write_all(req.as_bytes()).is_ok() {
+            return true;
+        }
+    }
+    false
 }
 
 /// 唤不起已有实例时的兜底提示（它可能还在启动中，或本地 API 端口被别的程序占了）。

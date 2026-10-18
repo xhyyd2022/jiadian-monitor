@@ -35,6 +35,9 @@ use serde_json::{json, Value};
 pub struct Settings {
     pub silent_start: bool,
     pub logging: bool,
+    /// 日志级别门槛：`info` 全部 / `warn` 只记警告与错误 / `error` 只记错误。
+    /// 只在 `logging` 开启时有意义。
+    pub log_level: String,
     pub high_fps: bool,
     /// 手动切换 CPU 数据源：关闭用 LHS CPU Total；开启才使用 PDH/系统时间自算。
     /// 开启后可额外输出 P/E 分组；同构核不输出分组但仍遵守手动选择。
@@ -54,6 +57,7 @@ impl Default for Settings {
         Self {
             silent_start: false,
             logging: true,
+            log_level: "info".into(),
             high_fps: false,
             hybrid_compat: false,
             theme: "dark".into(),
@@ -93,6 +97,14 @@ impl Settings {
         Self {
             silent_start: s("app.silent_start").map(truthy).unwrap_or(d.silent_start),
             logging: s("app.logging").map(truthy).unwrap_or(d.logging),
+            log_level: {
+                let v = s("app.log_level").unwrap_or("").trim().to_ascii_lowercase();
+                if v == "info" || v == "warn" || v == "error" {
+                    v
+                } else {
+                    d.log_level.clone()
+                }
+            },
             high_fps: s("app.high_fps").map(truthy).unwrap_or(d.high_fps),
             hybrid_compat: s("app.hybrid_compat").map(truthy).unwrap_or(d.hybrid_compat),
             theme: {
@@ -124,6 +136,9 @@ impl Settings {
              silent_start={}\n\
              ; 是否写 log/jiaidian.log（0 = 不写，省磁盘 I/O）\n\
              logging={}\n\
+             ; 日志级别：info = 全部 / warn = 只记警告与错误 / error = 只记错误；\n\
+             ; 仅在 logging=1 时有效\n\
+             log_level={}\n\
              ; 高刷模式：1 = 面板 / 预览 ~30fps，0 = 普通 ~10fps（省 CPU）\n\
              high_fps={}\n\
              ; 大小核兼容模式：0 = LHS CPU Total，1 = 自算 CPU 占用率；\n\
@@ -147,6 +162,7 @@ impl Settings {
              duration={}\n",
             b(self.silent_start),
             b(self.logging),
+            self.log_level,
             b(self.high_fps),
             b(self.hybrid_compat),
             self.theme,
@@ -280,6 +296,7 @@ pub fn apply_patch(patch: &Value) -> Result<Settings, String> {
         *current = Some(s.clone());
     }
     crate::logging::set_enabled(s.logging);
+    crate::logging::set_level(&s.log_level);
     crate::pipeline::set_high_fps(s.high_fps);
     crate::units::set(s.unit_mode.clone(), s.units_map());
     Ok(s)
@@ -297,6 +314,10 @@ fn patched(previous: &Settings, patch: &Value) -> Settings {
     };
     s.silent_start = b("silentStart", s.silent_start);
     s.logging = b("logging", s.logging);
+    let lv = t("logLevel", &s.log_level);
+    if lv == "info" || lv == "warn" || lv == "error" {
+        s.log_level = lv;
+    }
     s.high_fps = b("highFps", s.high_fps);
     s.hybrid_compat = b("hybridCompat", s.hybrid_compat);
     s.close_to_tray = b("closeToTray", s.close_to_tray);
@@ -322,6 +343,7 @@ pub fn to_json(s: &Settings) -> Value {
     json!({
         "silentStart": s.silent_start,
         "logging": s.logging,
+        "logLevel": s.log_level,
         "highFps": s.high_fps,
         "hybridCompat": s.hybrid_compat,
         "theme": s.theme,
@@ -352,6 +374,17 @@ mod tests {
             assert_eq!(Settings::from_map(&parse(&s.to_ini())), s);
         }
         assert!(Settings::from_map(&parse("\u{feff}[app]\r\nhybrid_compat=1\r\n")).hybrid_compat);
+    }
+
+    #[test]
+    fn log_level_round_trip_and_fallback() {
+        let s = Settings { log_level: "warn".into(), ..Settings::default() };
+        assert_eq!(Settings::from_map(&parse(&s.to_ini())), s);
+        // 非法值（手改 ini 写错）回落到默认 info，而不是把整份设置判为无效
+        assert_eq!(
+            Settings::from_map(&parse("[app]\nlog_level=verbose\n")).log_level,
+            "info"
+        );
     }
 
     #[test]

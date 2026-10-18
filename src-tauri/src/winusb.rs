@@ -41,6 +41,23 @@ const ERROR_NO_MORE_ITEMS: u32 = 259;
 const ERROR_SEM_TIMEOUT: u32 = 121;
 const ERROR_OPERATION_ABORTED: u32 = 995;
 
+/// 错误串里带上这个标记 = **设备已经不在**（拔掉了 / 句柄失效）。
+/// 调用方看到它应立刻释放链路，**不要继续对这个句柄重试** —— 否则每帧都会等满管道超时
+/// （`WinUsb_ReadPipe` 设了 3s），而且 `with_link` 期间一直占着 LINK 锁 → 界面被拖死。
+pub const GONE_MARK: &str = "[GONE]";
+
+/// 判断错误是否属于「设备已断开」。
+pub fn is_gone(e: &str) -> bool {
+    e.contains(GONE_MARK)
+}
+
+/// 这些 Win32 错误码表示设备已物理断开或句柄已失效：
+/// 1167 `ERROR_DEVICE_NOT_CONNECTED`、2 `ERROR_FILE_NOT_FOUND`、3 `ERROR_PATH_NOT_FOUND`、
+/// 31 `ERROR_GEN_FAILURE`、1168 `ERROR_NOT_FOUND`。
+fn is_gone_code(err: u32) -> bool {
+    matches!(err, 2 | 3 | 31 | 1167 | 1168)
+}
+
 fn to_wide(s: &str) -> Vec<u16> {
     std::ffi::OsStr::new(s)
         .encode_wide()
@@ -145,6 +162,9 @@ impl Device {
             );
             if file == INVALID_HANDLE_VALUE || file.is_null() {
                 let err = GetLastError();
+                if is_gone_code(err) {
+                    return Err(format!("{GONE_MARK}设备已断开（WinError {err}）"));
+                }
                 return Err(format!(
                     "CreateFileW 失败：{err}（WinError 5 = 设备被占用，GUI 未移交）"
                 ));
@@ -154,6 +174,9 @@ impl Device {
             if WinUsb_Initialize(file, &mut handle) == 0 {
                 let err = GetLastError();
                 CloseHandle(file);
+                if is_gone_code(err) {
+                    return Err(format!("{GONE_MARK}设备已断开（WinError {err}）"));
+                }
                 return Err(format!("WinUsb_Initialize 失败：{err}"));
             }
 
@@ -268,10 +291,11 @@ impl Device {
             )
         };
         if ok == 0 {
-            return Err(format!(
-                "WinUsb_WritePipe 失败：{}",
-                unsafe { GetLastError() }
-            ));
+            let err = unsafe { GetLastError() };
+            if is_gone_code(err) {
+                return Err(format!("{GONE_MARK}设备已断开（WinError {err}）"));
+            }
+            return Err(format!("WinUsb_WritePipe 失败：{err}"));
         }
         Ok(sent as usize)
     }
@@ -292,6 +316,9 @@ impl Device {
         };
         if ok == 0 {
             let err = unsafe { GetLastError() };
+            if is_gone_code(err) {
+                return Err(format!("{GONE_MARK}设备已断开（WinError {err}）"));
+            }
             if err == ERROR_SEM_TIMEOUT || err == ERROR_OPERATION_ABORTED {
                 return Ok(None);
             }
@@ -319,10 +346,16 @@ impl Drop for Device {
 }
 
 /// 列出所有 WinUSB 设备的 (path, serial)。
+///
+/// 注意：`DIGCF_PRESENT` 只枚举**当前存在**的接口，所以拔掉的设备不会出现在这里
+/// （界面上还留着的「已拔设备」来自上位机 `/usb/status` 的缓存列表，见 `lib.rs::device_list`）。
+/// 打开时会读一次字符串描述符（控制传输）：WinUSB 的**控制管道超时固定 5s**，
+/// `PIPE_TRANSFER_TIMEOUT` 对控制管道不生效（官方文档：该策略只对 Bulk/Interrupt 有效），
+/// 因此这里给的是 Bulk 管道超时；设备存在但固件不响应时单台最多仍要等 ~5s。
 pub fn list_devices() -> Result<Vec<(String, Option<String>)>, String> {
     let mut out = Vec::new();
     for path in list_paths()? {
-        match Device::open(&path, 2000) {
+        match Device::open(&path, 1200) {
             Ok(dev) => out.push((path, dev.serial.clone())),
             Err(_) => out.push((path, None)),
         }

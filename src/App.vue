@@ -110,6 +110,53 @@ const {
   loadAutostart,
 } = useSettings();
 
+/**
+ * 主题真正生效的地方是 `<html>` 上的 `light` class（CSS 变量与 `color-scheme`
+ * 都挂在 `:root` / `:root.light`，见 styles.css 顶部注释）。
+ *
+ * 切换分三步，**跨两帧**：
+ *   ① 本帧：先挂 `.theme-switching`（`transition: none !important`）；
+ *   ② 下一帧：才改 `light` class —— 此时过渡已经被关掉，是一次干净的跳变；
+ *   ③ 再下一帧：把过渡还回去（颜色已落定，恢复 transition 不会补动画）。
+ *
+ * **为什么换色要延后一帧**：①和②挤在同一帧的话，浏览器只做一次样式计算，
+ * 「本帧 transition 被覆盖成 none」这种边缘情况各家引擎处理不完全一致，
+ * 有的仍会按旧 transition 插值 —— 按钮就又开始慢半拍。拆到两次样式计算里
+ * 就没有歧义了。代价是 1 帧（≈16ms），远低于人眼能察觉的阈值。
+ *
+ * 注意：延迟一帧**不能替代**关过渡。只延迟不关过渡，按钮照样渐变 120ms，
+ * 只是整体都晚一帧开始，依然不同步。
+ *
+ * `themeToken` 防连点；两处 `setTimeout` 是兜底 —— 窗口被隐藏 / 遮挡时
+ * rAF 可能不跑，不能让主题卡在旧颜色、或让屏蔽类永久留在 html 上。
+ */
+let themeToken = 0;
+watch(
+  theme,
+  (t) => {
+    const root = document.documentElement;
+    const token = ++themeToken;
+    let committed = false;
+
+    root.classList.add("theme-switching");
+
+    const commit = () => {
+      if (committed || token !== themeToken) return;
+      committed = true;
+      root.classList.toggle("light", t === "light");
+      const restore = () => {
+        if (token === themeToken) root.classList.remove("theme-switching");
+      };
+      requestAnimationFrame(restore);
+      setTimeout(restore, 120);
+    };
+    requestAnimationFrame(commit);
+    setTimeout(commit, 120);
+  },
+  // sync：点下去立刻进第①步，不再等一次组件更新；immediate：启动时按 ini 里的值对齐
+  { flush: "sync", immediate: true },
+);
+
 // ---------------- 指标 ----------------
 const metrics = ref<BasicMetric[]>([]);
 const cpuLoadKeys = new Set(["cpu_load", "cpu_load_p", "cpu_load_e"]);
@@ -207,6 +254,12 @@ previewCh.onmessage = (buf) => {
 const devices = ref<DeviceEntry[]>([]);
 const selSerial = ref("");
 const devSize = ref<{ w: number; h: number } | null>(null);
+/**
+ * 上一次**确实探到**的设备尺寸。刷新/切设备时 `devSize` 会先被清空，
+ * 若直接回退到 320×240 兜底，标题与预览框就会「240 → 170」跳一下 → 界面抖动。
+ * 这里记住上次的值，清空期间沿用它，只有新尺寸真到了才变。
+ */
+const lastSize = ref<{ w: number; h: number } | null>(null);
 /** 当前正在渲染的尺寸标签，用来判断「换设备后要不要重新选素材」 */
 const curTag = ref("");
 
@@ -215,8 +268,12 @@ function tagOf(w: number | null | undefined, h: number | null | undefined): stri
   if (w === 320 && h === 240) return "v2";
   return "any";
 }
-/** 有效尺寸：没探到设备时按 320×240 兜底（与旧行为一致，可无设备预览） */
-const effSize = computed(() => devSize.value ?? { w: 320, h: 240 });
+/** 有效尺寸：没探到设备时沿用上次已知尺寸，都没有才按 320×240 兜底 */
+const effSize = computed(() => devSize.value ?? lastSize.value ?? { w: 320, h: 240 });
+// 只要探到真实尺寸就记下来（刷新/切设备时 devSize 会被清空，靠它维持布局不跳）
+watch(devSize, (v) => {
+  if (v) lastSize.value = v;
+});
 const selTag = computed(() => tagOf(effSize.value.w, effSize.value.h));
 /** SN 尾号：去掉固定后缀 `ABCD`，再取剩余部分的最后 6 位（`112233ABCD` → `112233`） */
 function sn6(sn: string | null | undefined): string {
@@ -509,9 +566,39 @@ async function loadThemes() {
     error.value = String(e);
   }
 }
+/** 给 invoke 加超时：后端万一卡住，前端也要能报错并复位按钮，不能一直停在「启动中…」。 */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label}超时（${ms} ms 无响应）`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
 async function startRender() {
   // 每次都重扫素材文件夹：外部新增 / 改名 / 删除主题后，不用重启程序就能看到
   await loadThemes();
+  // 选中的设备可能已经被拔掉（下拉里还留着旧项）：先确认它还在。
+  // 不在就重扫一次；仍然不在 → 清掉选择并明确提示，绝不把一台不存在的设备交给后端去接管
+  // （旧版本正是这样一路等到接管超时，界面看起来像死机）。
+  if (selSerial.value && !devices.value.some((d) => d.serial === selSerial.value)) {
+    await loadDevices();
+    if (selSerial.value && !devices.value.some((d) => d.serial === selSerial.value)) {
+      const gone = selSerial.value;
+      selSerial.value = "";
+      devSize.value = null;
+      renderMsg.value = `设备 ${sn6(gone)} 已断开，改为仅预览（重新插好后再选它）`;
+      logEvent(`启动前检查：${sn6(gone)} 已不在，改为仅预览`);
+    }
+  }
   if (!selected.value) {
     renderMsg.value = "先选一个主题";
     logEvent("未选主题，忽略启动");
@@ -531,12 +618,16 @@ async function startRender() {
   htmlPath.value = `assets/${page}`;
   logEvent(`render_start 调用：${htmlPath.value}（${labelOfSerial(selSerial.value)}）`);
   try {
-    renderMsg.value = await invoke<string>("render_start", {
-      html: htmlPath.value,
-      serial: selSerial.value || null,
-      width: effSize.value.w,
-      height: effSize.value.h,
-    });
+    renderMsg.value = await withTimeout(
+      invoke<string>("render_start", {
+        html: htmlPath.value,
+        serial: selSerial.value || null,
+        width: effSize.value.w,
+        height: effSize.value.h,
+      }),
+      20000,
+      "启动渲染",
+    );
     running.value = true;
     curTag.value = selTag.value;
     setLastTheme(selTag.value, selected.value);
@@ -617,7 +708,11 @@ async function loadInfo() {
   // 两次 CreateFileW 互撞（设备被占用）→ 一方失败 → 切设备卡顿/丢帧。
   await waitLinkReady();
   try {
-    const d = await invoke<DeviceInfo>("device_info", { serial: selSerial.value || null });
+    const d = await withTimeout(
+      invoke<DeviceInfo>("device_info", { serial: selSerial.value || null }),
+      20000,
+      "读取设备信息",
+    );
     info.value = d;
     if (d.brightness !== null) bright.value = d.brightness;
     if (d.rotation !== null) rot.value = d.rotation;
@@ -629,6 +724,8 @@ async function loadInfo() {
   } catch (e) {
     info.value = null;
     infoMsg.value = `未连接：${e}`;
+    // 读不到多半是设备被拔了：重扫一次，把下拉里已经不存在的旧项清掉
+    void loadDevices();
   }
 }
 async function ctl(fn: () => Promise<unknown>, label: string) {
@@ -647,12 +744,16 @@ async function ctl(fn: () => Promise<unknown>, label: string) {
 const applyConfig = () =>
   ctl(
     () =>
-      invoke("device_apply_config", {
-        serial: selSerial.value || null,
-        brightness: bright.value,
-        rotation: rot.value,
-        followOff: followOff.value,
-      }),
+      withTimeout(
+        invoke("device_apply_config", {
+          serial: selSerial.value || null,
+          brightness: bright.value,
+          rotation: rot.value,
+          followOff: followOff.value,
+        }),
+        20000,
+        "下发配置",
+      ),
     `下发配置（亮度 ${bright.value} / 旋转 ${rot.value} / 跟随息屏 ${followOff.value ? "开" : "关"}）`,
   );
 
@@ -660,8 +761,11 @@ const applyConfig = () =>
 /// 扫描设备：本地 WinUSB 物理枚举 + GUI `/usb/status` 的 devices[] 富化（尺寸/机型）。
 async function loadDevices(): Promise<void> {
   try {
-    // 只保留真正连着的设备：本地枚举能开出 SN 的才算数，过滤掉枚举到但打不开的占位项
-    const list = (await invoke<DeviceEntry[]>("device_list")).filter((d) => !!d.serial);
+    // 只保留真正连着的设备：本地枚举能开出 SN 的才算数，过滤掉枚举到但打不开的占位项。
+    // 另外要剔除「上位机缓存里还留着、但本地枚举不到且 GUI 也标了未连接」的旧项 ——
+    // 否则下拉里会一直挂着一台已经拔掉的设备，用户选中它就去接管一台不存在的设备。
+    const raw = await withTimeout(invoke<DeviceEntry[]>("device_list"), 15000, "扫描设备");
+    const list = raw.filter((d) => !!d.serial && !(d.path === null && !d.connected));
     // 扫描里带了尺寸/机型就顺手缓存，供下次 GUI 富化缺失时兜底
     for (const d of list) cacheDev(d.serial, d.width, d.height, d.variant);
     devices.value = list;
@@ -704,6 +808,20 @@ async function onDeviceChange(): Promise<void> {
   try {
     const sn = selSerial.value;
     logEvent(`切换设备：${labelOfSerial(sn)}`);
+    // 先确认这台设备还在：拔掉之后下拉里可能还留着它（来自上位机缓存）。
+    // 直接拿它去接管会白等一轮，旧版本还会把界面卡住 → 这里重扫一次，不在就明确报错并退回。
+    await loadDevices();
+    if (sn && !devices.value.some((d) => d.serial === sn)) {
+      running.value = false;
+      hasPreview.value = false;
+      info.value = null;
+      devSize.value = null;
+      selSerial.value = devices.value[0]?.serial || "";
+      renderMsg.value = `设备 ${sn6(sn)} 已断开，请重新插好后再点「刷新」`;
+      infoMsg.value = "未连接：选中的设备已断开";
+      logEvent(`切换设备失败：${sn6(sn)} 已不在（重扫后已从列表移除）`);
+      return;
+    }
     setLastDevice(sn); // 记住这次选择，下次启动默认用它
     if (running.value) await releaseTakeover(); // 先停旧设备（含归还租约）
     hasPreview.value = false;
@@ -749,7 +867,8 @@ async function boot() {
 onMounted(async () => {
   // 先读设置（`settings.ini`）：主题、单位、帧率档位、静默启动都在里面，后面 boot() 要用
   await loadSettings();
-  invoke("set_window_theme", { dark: theme.value === "dark" }).catch(() => {});
+  // 窗口主题不在这里设：`useSettings` 里有 watch(theme) 会跟着变（含初始化那次），
+  // 这里再调一次只会多一次 IPC。
   loadAutostart();
   // 全局禁止复制 / 刷新（F5、Ctrl+R、右键菜单、copy/cut）
   window.addEventListener("keydown", blockKey, true);
@@ -805,7 +924,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app" :class="theme">
+  <div class="app">
     <!-- 自定义标题栏（隐藏了 Windows 原生标题栏） -->
     <TitleBar @close="onClose" />
 
@@ -847,7 +966,9 @@ onUnmounted(() => {
                 <Icon icon="line-md:backup-restore" />刷新
               </button>
             </h2>
-            <p v-if="infoMsg" class="hint">{{ infoMsg }}</p>
+            <!-- 常驻一行：v-if 会让提示出现/消失时整张卡高度跳一下（左列最后一张卡是 flex:1，
+                 一跳整页都动）。空内容时靠 .hint.keep 的 min-height 占位。 -->
+            <p class="hint keep">{{ infoMsg }}</p>
             <div class="row">
               <Icon icon="line-md:hash" /><span class="lbl">SN</span
               ><span class="val" :title="info?.serial || ''">{{ info ? sn6(info.serial) : "—" }}</span>
@@ -939,10 +1060,13 @@ onUnmounted(() => {
                 <Icon icon="line-md:file-import" />导入素材
               </button>
             </div>
-            <p v-if="selected && !selectedPage" class="hint">
-              「{{ selected }}」没有 {{ effSize.w }}×{{ effSize.h }} 的素材，换个主题或导入
-            </p>
-            <p v-if="renderMsg" class="hint">{{ renderMsg }}</p>
+            <p class="hint keep">{{
+              selected && !selectedPage
+                ? `「${selected}」没有 ${effSize.w}×${effSize.h} 的素材，换个主题或导入`
+                : ""
+            }}</p>
+            <!-- 同上：常驻一行，避免下发结果反复出现/消失时卡片高度跳动 -->
+            <p class="hint keep">{{ renderMsg }}</p>
           </div>
           <div class="card">
             <h2><Icon icon="line-md:monitor" />预览 {{ effSize.w }}×{{ effSize.h }}</h2>

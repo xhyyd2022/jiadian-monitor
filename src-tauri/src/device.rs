@@ -55,6 +55,14 @@ fn with_device<T>(
             Err(e) => Err(e),
         }
     };
+    if let Err(e) = &r {
+        // 设备被拔掉：句柄已经废了。继续留着这条链路，后续每次操作都要等满管道超时，
+        // 而且 `with_link` 期间一直占着 LINK 锁 → 界面被拖住。直接释放，让下次操作快速失败。
+        if winusb::is_gone(e) {
+            logging::warn(&format!("设备已断开，释放链路：{e}"));
+            pipeline::close_link();
+        }
+    }
     if running {
         pipeline::resume();
     }
