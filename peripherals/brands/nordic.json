@@ -1,0 +1,28 @@
+{
+  "brand": "nordic",
+  "name": "Nordic 通用引擎",
+  "note": "VID 0x1915 是 Nordic 公版 2.4G 接收器，很多小众无线鼠标用它。32 字节，Report ID 0x05，发 [0x15,0x00,0x00,0x01]。",
+  "default": "nordic32",
+  "protocols": {
+    "nordic32": {
+      "desc": "32 字节 Feature/Output 查询，电量在 b[9]",
+      "match": { "inputLength": 32 },
+      "transport": "output",
+      "tx": {
+        "length": 32,
+        "reportId": "05",
+        "bytes": { "1": "15", "2": "00", "3": "00", "4": "01" },
+        "checksum": { "put": 31, "expr": "0" }
+      },
+      "rx": {
+        "length": 32,
+        "match": [{ "offset": 0, "equals": "05" }],
+        "timeoutMs": 400,
+        "attempts": 3
+      },
+      "battery": { "expr": "b[9]", "min": 1, "max": 100 },
+      "sample": { "rx": "05 15 00 00 01 00 00 00 00 4b", "expect": { "battery": 75 } },
+      "note": "Nordic 公版接收器常见于各种小众无线鼠标，电量位置稳定在 b[9]。充电状态这条协议里没有，所以没写。"
+    }
+  }
+}

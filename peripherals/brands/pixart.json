@@ -1,0 +1,33 @@
+{
+  "brand": "pixart",
+  "name": "PixArt 通用引擎",
+  "note": "CompX/PixArt 64 字节 Feature 0x83 通用套路：发 00 00 00 02 02 00 83，回包形如 A1 00 02 02 00 83 [chg] [pct]。覆盖 Lamzu / Pulsar / WLmouse / Attack Shark / Ajazz / Darmoshark / Glorious / Ninjutso / RAWM / Incott / Finalmouse / Keychron / Dareu 等一大批公版方案。",
+  "default": "pixart83",
+  "protocols": {
+    "pixart83": {
+      "desc": "64 字节 Feature 0x83 查询",
+      "match": { "featureLength": 64 },
+      "transport": "feature",
+      "tx": {
+        "length": 64,
+        "reportId": "00",
+        "bytes": { "1": "00", "2": "00", "3": "02", "4": "02", "5": "00", "6": "83" }
+      },
+      "rx": {
+        "length": 64,
+        "skip": [{ "offset": 0, "equals": "a0" }],
+        "match": [{ "offset": 0, "equals": "a1" }, { "offset": 2, "equals": "02" }, { "offset": 3, "equals": "02" }, { "offset": 5, "equals": "83" }],
+        "timeoutMs": 300,
+        "attempts": 5,
+        "intervalMs": 40,
+        "note": "GetFeature 会先拿到 0xA0 等待帧，rx.skip 会丢掉它们继续重试"
+      },
+      "battery": { "expr": "b[7]", "min": 1, "max": 100 },
+      "fields": [
+        { "name": "charging", "expr": "b[6] != 0" }
+      ],
+      "sample": { "rx": "a1 00 02 02 00 83 01 4b", "expect": { "battery": 75, "charging": true } },
+      "note": "回包特征串 A1 00 02 02 00 83 是固定的，后面跟 [充电] [电量]。有的型号先回 A0 帧（表示还没准备好），所以 attempts 给到 5 次。"
+    }
+  }
+}

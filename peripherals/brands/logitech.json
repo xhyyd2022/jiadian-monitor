@@ -1,0 +1,63 @@
+{
+  "brand": "logitech",
+  "name": "罗技",
+  "note": "HID++ 4.x，长报告 Report ID 0x11、共 20 字节。帧结构：[0]=0x11、[1]=设备索引（接收器用 0xFF）、[2]=Feature 索引、[3]=功能号<<4|软件 ID、[4..]=参数。Feature 索引由设备运行时分配，所以必须先问出 0x1004 的索引再拼指令。要避开 7 字节短集合，只认 20 字节长集合。",
+  "default": "hiddpp",
+  "protocols": {
+    "hiddpp": {
+      "desc": "HID++ 4.x UnifiedBattery（Feature 0x1004）",
+      "match": { "usagePage": "FF00", "usage": "0002", "inputLength": 20, "outputLength": 20 },
+      "transport": "output",
+      "pre": [
+        {
+          "desc": "用 Root Feature(0x0000) 的功能 1 getFeature 问 0x1004 分配到了几号，回包 b[4] 就是索引",
+          "tx": {
+            "length": 20,
+            "reportId": "11",
+            "bytes": { "1": "ff", "2": "00", "3": "18", "4": "10", "5": "04" }
+          },
+          "rx": { "length": 20, "match": [{ "offset": 2, "equals": "00" }], "timeoutMs": 300, "attempts": 2 },
+          "take": { "offset": 4 },
+          "put": { "frame": 0, "offset": 2 }
+        }
+      ],
+      "tx": [
+        {
+          "desc": "读电量：0x1004 功能 0，第 2 字节的索引由 pre 填入",
+          "length": 20,
+          "reportId": "11",
+          "bytes": { "1": "ff", "2": "07", "3": "08", "4": "00", "5": "00" }
+        }
+      ],
+      "rx": {
+        "length": 20,
+        "match": [{ "offset": 2, "equals": "07" }],
+        "skip": [{ "offset": 2, "equals": "ff" }],
+        "timeoutMs": 400,
+        "attempts": 3,
+        "intervalMs": 40
+      },
+      "battery": { "expr": "b[4]", "min": 1, "max": 100, "valid": "b[4] <= 100" },
+      "fields": [
+        { "name": "charging", "expr": "b[6] == 1 || b[6] == 2", "note": "b[6]: 1=充电中 2=充满 3=放电" },
+        { "name": "batteryLevels", "expr": "b[5]", "min": 0, "max": 20, "note": "离散档位，诊断用" }
+      ],
+      "sample": { "rx": "11 ff 07 08 4b 05 03 00", "expect": { "battery": 75, "charging": false } },
+      "note": "若 b[4] 长期为 0 而 b[5] 有值，说明固件只报档位，把 battery.expr 改成 b[5] * 10。若整条读不到回包，多半是功能号不对（b[3] 的高 4 位），可试 0x08 → 0x18 → 0x28。"
+    },
+    "hiddppAdc": {
+      "desc": "G PRO X Wireless 走 HID++ 4.2 ADC 通道（Feature 0x1F20），回包是毫伏",
+      "match": { "usagePage": "FF43", "inputLength": 20, "outputLength": 20 },
+      "transport": "output",
+      "tx": {
+        "length": 20,
+        "reportId": "11",
+        "bytes": { "1": "ff", "2": "0a", "3": "08", "4": "00", "5": "00" }
+      },
+      "rx": { "length": 20, "match": [{ "offset": 2, "equals": "0a" }], "timeoutMs": 400, "attempts": 3 },
+      "battery": { "expr": "clamp(round((u16be(4) - 3500) * 100 / 700), 0, 100)", "min": 0, "max": 100 },
+      "sample": { "rx": "11 ff 0a 08 0f 3c", "expect": { "battery": 57 } },
+      "note": "u16be(4)=0x0f3c=3900mV，按 3500mV=0%、4200mV=100% 线性算得 57%。实际是 12 阶锂电曲线，线性近似误差约 ±10%，JSON 表达不了查表，属已知取舍。"
+    }
+  }
+}

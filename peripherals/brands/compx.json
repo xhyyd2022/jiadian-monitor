@@ -1,0 +1,108 @@
+{
+  "brand": "compx",
+  "name": "CompX / VGN / ATK",
+  "note": "0x3554 与 0x373B 两个 VID 共用一套私有协议，分 17 字节鼠标端点与 20 字节键盘端点——必须先靠 match 的 inputLength 隔离，不能只按 VID 匹配。",
+  "default": "mouse17",
+  "protocols": {
+    "mouse17": {
+      "desc": "17/17 字节鼠标端点：Cmd1 握手 → Cmd2 驱动激活 → Cmd3 在线 → Cmd4 读电量",
+      "match": { "usagePage": "FF02", "usage": "0002", "inputLength": 17, "outputLength": 17 },
+      "transport": "output",
+      "tx": [
+        { "desc": "Cmd1 握手", "length": 17, "reportId": "08", "bytes": { "1": "04", "2": "00", "3": "00", "4": "00", "5": "01", "6": "00" }, "delayMs": 20 },
+        { "desc": "Cmd2 驱动激活", "length": 17, "reportId": "08", "bytes": { "1": "04", "2": "00", "3": "00", "4": "00", "5": "02", "6": "00" }, "delayMs": 20 },
+        { "desc": "Cmd3 在线查询", "length": 17, "reportId": "08", "bytes": { "1": "04", "2": "00", "3": "00", "4": "00", "5": "03", "6": "00" }, "delayMs": 20 },
+        {
+          "desc": "Cmd4 电量查询",
+          "length": 17,
+          "reportId": "08",
+          "bytes": { "1": "04", "2": "00", "3": "00", "4": "00", "5": "04", "6": "00" },
+          "checksum": { "put": 15, "expr": "(0x55 - sum(1, 15)) & 0xff" }
+        }
+      ],
+      "rx": {
+        "length": 17,
+        "match": [{ "offset": 1, "equals": "04" }],
+        "timeoutMs": 400,
+        "attempts": 4,
+        "intervalMs": 30
+      },
+      "battery": { "expr": "b[6]", "min": 1, "max": 100 },
+      "fields": [
+        { "name": "charging", "expr": "b[7] == 1", "note": "b[7]==1 表示充电中" },
+        { "name": "millivolts", "expr": "u16be(8)", "min": 0, "max": 10000, "note": "部分型号回包带电压高/低字节" }
+      ],
+      "sample": { "rx": "08 04 00 00 00 02 4b 00 0f 5c", "expect": { "battery": 75, "charging": false, "millivolts": 3932 } },
+      "note": "校验和 = 0x55 - (sum(b[1..15]) & 0xFF) 再取低 8 位。严禁用 inputLength >= 17 做匹配，否则会把 20 字节键盘端点一起吃进来。"
+    },
+    "keyboard20": {
+      "desc": "20/20 字节键盘端点（MCHOSE G75 PRO 等）",
+      "match": { "usagePage": "FF02", "usage": "0002", "inputLength": 20, "outputLength": 20 },
+      "transport": "output",
+      "tx": {
+        "length": 20,
+        "reportId": "13",
+        "bytes": { "1": "4a", "2": "00", "3": "00", "4": "00", "5": "00", "6": "00" },
+        "checksum": { "put": 19, "expr": "sum(0, 18) & 0xff" }
+      },
+      "rx": {
+        "length": 20,
+        "match": [{ "offset": 0, "equals": "13" }],
+        "timeoutMs": 400,
+        "attempts": 4,
+        "intervalMs": 30
+      },
+      "battery": { "expr": "b[5]", "min": 1, "max": 100 },
+      "fields": [
+        { "name": "charging", "expr": "b[6] == 0x10", "note": "b[6]: 0x10 充电中、0x01 电池供电" }
+      ],
+      "sample": { "rx": "13 4a 00 00 00 4b 10", "expect": { "battery": 75, "charging": true } }
+    },
+    "atk17": {
+      "desc": "ATK F1 Ultimate 2.0 / Beken 17 字节中断端点（无 Feature 端点，禁止 WriteFile 前 DrainReports）",
+      "match": { "usagePage": "FF02", "usage": "0002", "inputLength": 17, "outputLength": 17, "featureLength": 0, "productLike": "ATK" },
+      "transport": "output",
+      "tx": {
+        "length": 17,
+        "reportId": "08",
+        "bytes": { "1": "04", "2": "00", "3": "00", "4": "00", "5": "00", "6": "00" },
+        "checksum": { "put": 15, "expr": "(0x55 - sum(1, 15)) & 0xff" }
+      },
+      "rx": { "length": 17, "match": [{ "offset": 1, "equals": "04" }], "timeoutMs": 400, "attempts": 4 },
+      "battery": { "expr": "b[6]", "min": 1, "max": 100 },
+      "fields": [
+        { "name": "charging", "expr": "b[7] == 1" },
+        { "name": "millivolts", "expr": "u16be(8)", "min": 0, "max": 10000 }
+      ],
+      "sample": { "rx": "08 04 00 00 00 02 4b 01 0f 5c", "expect": { "battery": 75, "charging": true } },
+      "note": "8K dongle 只暴露中断端点，FeatureReportByteLength == 0，所以 match.featureLength 写 0。写指令前不要清空输入队列，会丢掉紧随其后的回复。"
+    },
+    "atk64": {
+      "desc": "ATK / Beken 64 字节中断端点（VGN S99 等键盘）：Report 4 + 请求序号 + 0x1A",
+      "match": { "usagePage": "FF1C", "usage": "0092", "inputLength": 64, "outputLength": 64, "featureLength": 0 },
+      "transport": "output",
+      "tx": {
+        "length": 64,
+        "reportId": "04",
+        "bytes": { "1": "01", "2": "00", "3": "1a" },
+        "delayMs": 10
+      },
+      "rx": {
+        "length": 64,
+        "match": [
+          { "offset": 0, "equals": "04" },
+          { "offset": 3, "equals": "1a" }
+        ],
+        "timeoutMs": 600,
+        "attempts": 4,
+        "intervalMs": 40
+      },
+      "battery": { "expr": "b[8]", "min": 0, "max": 100 },
+      "fields": [
+        { "name": "charging", "expr": "b[9] == 1", "note": "b[9]==1 充电中；b[9]==2 表示在线（有线/已充满）" }
+      ],
+      "sample": { "rx": "04 01 00 1a 00 00 00 00 64 02 00", "expect": { "battery": 100, "charging": false } },
+      "note": "实测 VGN S99（320F:5055，FF1C/0092，64/64 字节端点）直接响应 ATK V75X 的 0x1A 查询帧：回包 b[0]=Report ID 4、b[1..2] 原样回显请求序号、b[3]=0x1A、b[8]=电量百分比、b[9]=充电码。请求序号实测 0x0000 也能用，这里固定填 01。"
+    }
+  }
+}

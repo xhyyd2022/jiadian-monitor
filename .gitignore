@@ -31,6 +31,10 @@ secrets*
 private/
 *.ini
 
+# ── Python 辅助脚本的缓存（peripherals/_check.py 等用）──
+__pycache__/
+*.pyc
+
 # ── 编辑器 / 系统 ──
 .vscode/*
 !.vscode/extensions.json

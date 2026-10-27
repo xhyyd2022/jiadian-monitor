@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "poll": { "intervalMs": 3000 },
+  "brands": {
+    "razer": { "name": "雷蛇", "file": "brands/razer.json" },
+    "logitech": { "name": "罗技", "file": "brands/logitech.json" },
+    "rapoo": { "name": "雷柏", "file": "brands/rapoo.json" },
+    "valkyrie": { "name": "瓦尔基里", "file": "brands/valkyrie.json" },
+    "compx": { "name": "CompX / VGN / ATK", "file": "brands/compx.json" },
+    "mchose": { "name": "迈从", "file": "brands/mchose.json" },
+    "acer": { "name": "宏碁", "file": "brands/acer.json" },
+    "flydigi": { "name": "飞智", "file": "brands/flydigi.json" },
+    "steelseries": { "name": "赛睿", "file": "brands/steelseries.json" },
+    "edifier": { "name": "漫步者", "file": "brands/edifier.json" },
+    "pixart": { "name": "PixArt 通用引擎", "file": "brands/pixart.json" },
+    "vaxee": { "name": "VAXEE", "file": "brands/vaxee.json" },
+    "endgame": { "name": "Endgame Gear", "file": "brands/endgame.json" },
+    "nordic": { "name": "Nordic 通用引擎", "file": "brands/nordic.json" },
+    "generic": { "name": "通用 HID", "file": "brands/generic.json" }
+  },
+  "devices": [
+    { "vid": "1532", "pid": "*", "brand": "razer", "protocol": "standard90", "category": "Mouse", "note": "90/91 字节私有控制帧，覆盖绝大多数雷蛇鼠标与键盘" },
+
+    { "vid": "046D", "pid": "*", "brand": "logitech", "protocol": "hiddpp", "category": "Mouse", "note": "HID++ 4.x，需先 ping 拿到 Feature 索引" },
+
+    { "vid": "24AE", "pid": "1205", "brand": "rapoo", "protocol": "telemetry7", "category": "Mouse", "note": "7 字节遥测帧（BB B0 51 头），已实机验证" },
+    { "vid": "24AE", "pid": "*", "brand": "rapoo", "protocol": "telemetry19", "category": "Mouse", "note": "19 字节异步遥测，不主动查询" },
+
+    { "vid": "374A", "pid": "*", "brand": "valkyrie", "protocol": "cmdF7", "category": "Keyboard" },
+    { "vid": "374A", "pid": "A272", "brand": "valkyrie", "protocol": "vk87max", "model": "VK 87 Max V2", "category": "Keyboard", "note": "2.4G 接收器回包格式与其它型号不同" },
+    { "vid": "3151", "pid": "*", "brand": "valkyrie", "protocol": "cmdF7", "category": "Mouse", "note": "同厂代工 VID" },
+    { "vid": "347A", "pid": "*", "brand": "valkyrie", "protocol": "cmdF7", "category": "Mouse", "note": "同厂代工 VID" },
+
+    { "vid": "3554", "pid": "F503", "brand": "compx", "protocol": "mouse17", "model": "VGN 蜻蜓 F1 Pro", "category": "Mouse" },
+    { "vid": "3554", "pid": "FA09", "brand": "compx", "protocol": "keyboard20", "model": "MCHOSE G75 PRO", "category": "Keyboard", "note": "同为 3554 但只用 20 字节端点，必须与 17 字节鼠标端点隔离" },
+    { "vid": "3554", "pid": "*", "brand": "compx", "protocol": "mouse17", "category": "Mouse" },
+    { "vid": "373B", "pid": "11D9", "brand": "compx", "protocol": "atk17", "model": "ATK F1 Ultimate 2.0", "category": "Mouse", "note": "8K dongle，只有 17 字节中断端点，无 Feature 端点" },
+    { "vid": "373B", "pid": "*", "brand": "compx", "protocol": "atk17", "category": "Mouse" },
+    { "vid": "320F", "pid": "5055", "brand": "compx", "protocol": "atk64", "model": "VGN S99", "category": "Keyboard", "note": "实测可用：64 字节 FF1C/0092 端点响应 ATK 0x1A 查询帧" },
+    { "vid": "320F", "pid": "*", "brand": "compx", "protocol": "atk64", "category": "Keyboard", "note": "ATK / Beken 系 64 字节端点键盘，厂商名可能是 ATK 或 VGN" },
+
+    { "vid": "3837", "pid": "1101", "brand": "mchose", "protocol": "a5v2", "model": "迈从 A5 V2 Ultra", "category": "Mouse", "note": "短报文 0x11，载荷整体异或 0xFF" },
+    { "vid": "3837", "pid": "3033", "brand": "mchose", "protocol": "g87v2", "model": "MCHOSE G87 V2", "category": "Keyboard" },
+    { "vid": "3837", "pid": "*", "brand": "mchose", "protocol": "a5v2", "category": "Mouse" },
+    { "vid": "258A", "pid": "01BB", "brand": "mchose", "protocol": "z75s", "model": "MCHOSE Z75S", "category": "Keyboard" },
+
+    { "vid": "249A", "pid": "5C2F", "brand": "acer", "protocol": "omr33", "model": "宏碁 OMR 无线接收器", "category": "Dongle", "note": "无线下充电状态不可信，强制为 false" },
+    { "vid": "248A", "pid": "5D2E", "brand": "acer", "protocol": "omr33", "model": "宏碁 OMR 有线", "category": "Mouse" },
+    { "vid": "248A", "pid": "5E2E", "brand": "acer", "protocol": "omr33", "model": "宏碁 OMR 有线", "category": "Mouse" },
+
+    { "vid": "37D7", "pid": "2502", "brand": "flydigi", "protocol": "ffa033", "model": "飞智 GPA6", "category": "Mouse" },
+    { "vid": "37D7", "pid": "2401", "brand": "flydigi", "protocol": "ffa033", "model": "飞智 Vader 5 Pro", "category": "Mouse" },
+    { "vid": "37D7", "pid": "*", "brand": "flydigi", "protocol": "ffa033", "category": "Mouse" },
+
+    { "vid": "1038", "pid": "2232", "brand": "steelseries", "protocol": "nova65", "model": "Arctis Nova 5 / 5X", "category": "Headset" },
+    { "vid": "1038", "pid": "2253", "brand": "steelseries", "protocol": "nova65", "model": "Arctis Nova 5X", "category": "Headset" },
+
+    { "vid": "2D99", "pid": "E049", "brand": "edifier", "protocol": "haloSpace", "model": "花再 Halo Space", "category": "Headset", "note": "固件不回充电状态，界面显示未知" },
+
+    { "vid": "36A7", "pid": "A887", "brand": "pixart", "protocol": "pixart83", "model": "WLmouse Beast X", "category": "Mouse" },
+    { "vid": "36A7", "pid": "A868", "brand": "pixart", "protocol": "pixart83", "model": "WLmouse Beast X Mini Pro", "category": "Mouse" },
+    { "vid": "36A7", "pid": "A880", "brand": "pixart", "protocol": "pixart83", "model": "WLmouse Beast X Max", "category": "Mouse" },
+    { "vid": "36A7", "pid": "*", "brand": "pixart", "protocol": "pixart83", "category": "Mouse" },
+
+    { "vid": "3057", "pid": "*", "brand": "vaxee", "protocol": "xe64", "category": "Mouse", "note": "原始值每档 5%" },
+    { "vid": "3367", "pid": "*", "brand": "endgame", "protocol": "xm64", "category": "Mouse" },
+    { "vid": "1915", "pid": "*", "brand": "nordic", "protocol": "nordic32", "category": "Mouse", "note": "Nordic 公版接收器，常见于小众无线鼠标" }
+  ]
+}

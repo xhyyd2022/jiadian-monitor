@@ -55,6 +55,22 @@ fn main() {
         println!("{}", jiaidian_monitor_lib::lhws_state_json());
         return;
     }
+    // 外设协议库诊断：列 HID 端点 / 跑一轮识别 / 回放所有 sample。
+    if args.iter().any(|a| a == "--peripherals-hid") {
+        println!("{}", jiaidian_monitor_lib::dump_peripherals_hid());
+        return;
+    }
+    if args.iter().any(|a| a == "--peripherals-dump") {
+        println!("{}", jiaidian_monitor_lib::dump_peripherals_json());
+        return;
+    }
+    if args.iter().any(|a| a == "--peripherals-selftest") {
+        match jiaidian_monitor_lib::peripherals_selftest() {
+            Ok(m) => println!("OK: {m}"),
+            Err(e) => println!("ERR: {e}"),
+        }
+        return;
+    }
     if args.iter().any(|a| a == "--lhws-install") {
         match jiaidian_monitor_lib::lhws_install_now() {
             Ok(m) => println!("OK://n{m}"),

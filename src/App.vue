@@ -10,6 +10,7 @@ import TitleBar from "./components/TitleBar.vue";
 import Sidebar from "./components/Sidebar.vue";
 import SettingsPage from "./components/SettingsPage.vue";
 import MaterialsPage from "./components/MaterialsPage.vue";
+import PeripheralsPage from "./components/PeripheralsPage.vue";
 
 addCollection(lineMd);
 
@@ -98,7 +99,7 @@ interface DeviceInfo {
   follow_off: number | null;
 }
 
-const page = ref<"home" | "perf" | "materials" | "settings">("home");
+const page = ref<"home" | "perf" | "peripherals" | "materials" | "settings">("home");
 const error = ref("");
 const {
   theme,
@@ -1104,6 +1105,9 @@ onUnmounted(() => {
           </ul>
         </section>
       </div>
+
+      <!-- ============ 外设 ============ -->
+      <PeripheralsPage v-show="page === 'peripherals'" />
 
       <!-- ============ 设置 ============ -->
       <SettingsPage v-show="page === 'settings'" />

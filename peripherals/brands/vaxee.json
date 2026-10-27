@@ -1,0 +1,31 @@
+{
+  "brand": "vaxee",
+  "name": "VAXEE",
+  "note": "64 字节 Feature 0x0E 0xA5。电量原始值每档 5%，所以是 0..20 的档位，不是百分比。",
+  "default": "xe64",
+  "protocols": {
+    "xe64": {
+      "desc": "Feature 0x0E：Page 0x0B 电量、Page 0x10 充电",
+      "match": { "featureLength": 64 },
+      "transport": "feature",
+      "tx": {
+        "length": 64,
+        "reportId": "0e",
+        "bytes": { "1": "a5", "2": "0b", "3": "01", "4": "01" }
+      },
+      "rx": {
+        "length": 64,
+        "match": [{ "offset": 0, "equals": "0e" }],
+        "timeoutMs": 300,
+        "attempts": 3,
+        "intervalMs": 40
+      },
+      "battery": { "expr": "b[5] * 5", "min": 5, "max": 100 },
+      "fields": [
+        { "name": "level", "expr": "b[5]", "min": 0, "max": 20, "note": "原始档位 0..20" }
+      ],
+      "sample": { "rx": "0e a5 0b 01 01 0f", "expect": { "battery": 75 } },
+      "note": "b[5] 是 0..20 的档位，乘 5 才是百分比。充电状态这条协议里没实测到，所以没写 charging。"
+    }
+  }
+}

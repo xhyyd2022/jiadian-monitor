@@ -1,0 +1,32 @@
+{
+  "brand": "steelseries",
+  "name": "赛睿",
+  "note": "Arctis Nova 5/5X：UsagePage 0xFFC0，65 字节中断报告，发 00 B0 查询。回包 rx[2]==0x02 表示离线。",
+  "default": "nova65",
+  "protocols": {
+    "nova65": {
+      "desc": "65 字节中断：rx[4] 电量、rx[5]==0x01 充电、rx[2]==0x02 离线",
+      "match": { "usagePage": "FFC0", "inputLength": 65 },
+      "transport": "output",
+      "tx": {
+        "length": 65,
+        "reportId": "00",
+        "bytes": { "1": "b0" },
+        "checksum": { "put": 64, "expr": "sum(0, 63) & 0xff" }
+      },
+      "rx": {
+        "length": 65,
+        "match": [{ "offset": 1, "equals": "b0" }],
+        "skip": [{ "offset": 2, "equals": "02" }],
+        "timeoutMs": 600,
+        "attempts": 3
+      },
+      "battery": { "expr": "b[4]", "min": 1, "max": 100, "valid": "b[2] != 0x02" },
+      "fields": [
+        { "name": "charging", "expr": "b[5] == 0x01" }
+      ],
+      "sample": { "rx": "00 b0 01 00 4b 01", "expect": { "battery": 75, "charging": true } },
+      "note": "rx[2]==0x02 是耳机离线（关机 / 超出范围），这时 rx[4] 的值没意义，所以 rx.skip 会直接丢掉这类回包。"
+    }
+  }
+}

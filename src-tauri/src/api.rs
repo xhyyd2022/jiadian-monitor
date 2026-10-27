@@ -223,6 +223,13 @@ fn dispatch(method: &str, route: &str) -> (&'static str, &'static str, String) {
             JSON,
             serde_json::to_string(&crate::assets::list_themes()).unwrap_or_else(|_| "[]".into()),
         ),
+        // 外设电量：品牌 / 型号 / 电量 / 充电状态。数据来自后台轮询线程的快照。
+        ("GET", "/peripherals") => ("200 OK", JSON, crate::peripherals::json().to_string()),
+        // 触发一次立刻重新读盘并轮询（协议 JSON 改完不用重启程序）。
+        ("POST", "/peripherals/refresh") => {
+            crate::peripherals::refresh();
+            ("200 OK", TEXT, "refreshing".to_string())
+        }
         // 兼容旧调用：以前不区分方法，GET 也能唤起 / 退出
         (_, "/app/show") => {
             crate::show_main_window();
@@ -253,6 +260,8 @@ fn index() -> String {
             { "method": "GET",  "path": "/devices",  "desc": "设备列表（本地枚举 + 上位机富化）" },
             { "method": "GET",  "path": "/link",     "desc": "USB 接管状态 { open, ready, serial }" },
             { "method": "GET",  "path": "/themes",   "desc": "素材主题列表" },
+            { "method": "GET",  "path": "/peripherals", "desc": "外设（鼠标/键盘/耳机）品牌、型号、电量" },
+            { "method": "POST", "path": "/peripherals/refresh", "desc": "重新读协议 JSON 并立刻轮询一轮" },
             { "method": "POST", "path": "/app/show", "desc": "唤起主窗口" },
             { "method": "POST", "path": "/app/quit", "desc": "归还设备后退出" }
         ]

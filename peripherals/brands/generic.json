@@ -1,0 +1,22 @@
+{
+  "brand": "generic",
+  "name": "通用 HID",
+  "note": "不依赖任何厂商私有协议：HID 标准里 UsagePage 0x0006 / Usage 0x0020 就是 Battery Level，很多键盘、鼠标、手柄会直接报。凡是 index.json 里没登记的设备都会落到这里。",
+  "default": "hidBattery",
+  "protocols": {
+    "hidBattery": {
+      "desc": "标准 HID Battery Level（UsagePage 0x0006 / Usage 0x0020），被动监听输入报告",
+      "match": { "usagePage": "0006", "usage": "0020" },
+      "transport": "input",
+      "rx": {
+        "length": 8,
+        "timeoutMs": 1500,
+        "attempts": 2,
+        "intervalMs": 200,
+        "note": "标准电量报告一般是短帧，且只在电量变化时推一次，所以超时给宽"
+      },
+      "battery": { "expr": "b[1]", "min": 1, "max": 100 },
+      "note": "标准电池报告的第 0 字节是 Report ID，第 1 字节是 0..100 的百分比。有些设备报 0..255 刻度，若读数一直是 1~2，把 expr 改成 b[1] * 100 / 255。拿不到充电状态，所以不写 charging。"
+    }
+  }
+}

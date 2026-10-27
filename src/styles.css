@@ -239,6 +239,10 @@ body {
   background: var(--sub);
   opacity: 0.45;
 }
+/* 读失败（外设卡片：协议对不上 / 设备不回应） */
+.dot.bad {
+  background: var(--danger);
+}
 .mini {
   margin-left: auto;
   display: inline-flex;
@@ -290,6 +294,16 @@ body {
 }
 .val.off {
   color: var(--sub);
+}
+/* 外设电量：充足 / 偏低 / 快没电，沿用状态色 */
+.val.ok {
+  color: var(--ok);
+}
+.val.warn {
+  color: var(--warn);
+}
+.val.bad {
+  color: var(--danger);
 }
 select {
   background: var(--btn);

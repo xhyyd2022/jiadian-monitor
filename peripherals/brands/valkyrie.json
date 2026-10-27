@@ -1,0 +1,43 @@
+{
+  "brand": "valkyrie",
+  "name": "瓦尔基里",
+  "note": "0xF7 查询命令。回包有两种前导形态：标准 rx[0]=0x00 rx[1]=0x01 时载荷从下标 2 起；无前导 rx[0]=0x01 时从下标 1 起。下面按标准形态写，特例另开档位。",
+  "default": "cmdF7",
+  "protocols": {
+    "cmdF7": {
+      "desc": "0xF7 查询，标准响应带 00 01 前导",
+      "match": { "inputLength": 64 },
+      "transport": "output",
+      "tx": { "length": 64, "reportId": "00", "bytes": { "1": "f7" }, "checksum": { "put": 63, "expr": "sum(1, 62) & 0xff" } },
+      "rx": {
+        "length": 64,
+        "match": [{ "offset": 1, "equals": "01" }],
+        "timeoutMs": 400,
+        "attempts": 3,
+        "intervalMs": 40
+      },
+      "battery": { "expr": "b[3]", "min": 1, "max": 100 },
+      "sample": { "rx": "00 01 05 4b 00", "expect": { "battery": 75 } },
+      "note": "标准响应 rx[0]=0x00、rx[1]=0x01，所以载荷第 1 字节（电量）落在 b[3]。若你的型号回包电量位置不同，改 battery.expr 即可。"
+    },
+    "vk87max": {
+      "desc": "VK 87 Max V2 的 2.4G 接收器：回 00 00 <batt> 00 00 00 01 01，必须从 b[2] 取",
+      "match": { "inputLength": 64 },
+      "transport": "output",
+      "tx": { "length": 64, "reportId": "00", "bytes": { "1": "f7" }, "checksum": { "put": 63, "expr": "sum(1, 62) & 0xff" } },
+      "rx": {
+        "length": 64,
+        "match": [{ "offset": 0, "equals": "00" }],
+        "timeoutMs": 400,
+        "attempts": 3,
+        "intervalMs": 40
+      },
+      "battery": { "expr": "b[2]", "min": 1, "max": 100 },
+      "fields": [
+        { "name": "deviceType", "expr": "b[7]", "min": 0, "max": 255 }
+      ],
+      "sample": { "rx": "00 00 4b 00 00 00 01 01", "expect": { "battery": 75 } },
+      "note": "这台的回包 rx[0]==0x00 且没有 0x01，如果按标准档位取 b[3] 会读到 0，所以单独一档。"
+    }
+  }
+}

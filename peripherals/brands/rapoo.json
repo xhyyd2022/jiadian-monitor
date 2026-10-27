@@ -1,0 +1,53 @@
+{
+  "brand": "rapoo",
+  "name": "雷柏",
+  "note": "雷柏是「不主动查询」型：接收器自己往输入端点推遥测帧，靠 rx.match 在数据流里挑帧。目前覆盖两代：19 字节帧（Report ID 0x07）用于有 33 字节控制端点的那一代；7 字节帧（帧头 BB B0 51）用于 24AE:1205 这一代（无 33 字节端点、无 Feature 端点）。两代帧内偏移不同，务必靠 match.inputLength 区分。",
+  "default": "telemetry19",
+  "protocols": {
+    "telemetry19": {
+      "desc": "19 字节异步遥测帧（Report ID 0x07）",
+      "match": { "usagePage": "FF00", "usage": "0002", "inputLength": 19 },
+      "transport": "input",
+      "rx": {
+        "length": 19,
+        "match": [{ "offset": 0, "equals": "07" }],
+        "timeoutMs": 1200,
+        "attempts": 2,
+        "intervalMs": 200,
+        "note": "遥测帧是设备主动推的，间隔可能到 1 秒，所以超时给宽一点"
+      },
+      "battery": { "expr": "b[8]", "min": 1, "max": 100 },
+      "fields": [
+        { "name": "charging", "expr": "b[7] == 2", "note": "b[7]: 0x01=放电 0x02=充电" },
+        { "name": "dpiX", "expr": "u16le(3)", "min": 0, "max": 100000, "round": true },
+        { "name": "dpiY", "expr": "u16le(5)", "min": 0, "max": 100000, "round": true }
+      ],
+      "sample": { "rx": "07 00 04 40 06 40 06 02 5f", "expect": { "battery": 95, "charging": true } },
+      "note": "帧内已知偏移：[0]=0x07 Report ID、[2]=当前档位、[3..4]=DpiX 小端、[5..6]=DpiY 小端、[7]=充电、[8]=电量、[10]=回报率码、[13..14]=PID、[17]=档位总数。"
+    },
+    "telemetry7": {
+      "desc": "7 字节异步遥测帧（帧头 BB B0 51），适配没有 33 字节端点的那一代固件",
+      "match": { "usagePage": "FF00", "usage": "0002", "inputLength": 7 },
+      "transport": "input",
+      "rx": {
+        "length": 7,
+        "match": [
+          { "offset": 0, "equals": "BB" },
+          { "offset": 1, "equals": "B0" },
+          { "offset": 2, "equals": "51" }
+        ],
+        "timeoutMs": 1200,
+        "attempts": 3,
+        "intervalMs": 200,
+        "note": "鼠标活动时约 3.5 秒推一帧；鼠标睡着就完全没有帧，此时靠引擎的省电退避处理"
+      },
+      "battery": { "expr": "if(b[6] > 100, 100, b[6])", "min": 0, "max": 100 },
+      "fields": [
+        { "name": "charging", "expr": "b[5] == 2", "note": "b[5] 是 BatStatus：0x01=放电 0x02=充电" },
+        { "name": "dpiX", "expr": "u16le(3)", "min": 0, "max": 100000, "round": true }
+      ],
+      "sample": { "rx": "BB B0 51 88 13 01 3A", "expect": { "battery": 58, "charging": false } },
+      "note": "帧结构由官方 RapooDevice.dll 的 BaseDevice::RecvSlot 反汇编确认：b[0..2]=常量帧头 BB B0 51，b[3..4]=DpiX 小端（实机 0x1388=5000，日志里还有 0x0C80=3200），b[5]=BatStatus（对应属性名 BatStatus），b[6]=电量（原样送进 QString::number 再钳到 100，所以 0x7F 这类占位值也会显示成 100，本档位用同样的钳位）。同一份固件里 FF0B/0104 的 61 字节端点只回固定能力块，不含电量。"
+    }
+  }
+}

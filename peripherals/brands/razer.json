@@ -1,0 +1,50 @@
+{
+  "brand": "razer",
+  "name": "雷蛇",
+  "note": "雷蛇私有控制帧：结构体固定 90 字节，字段编号 [0]=状态、[1]=transaction id、[6]=命令类、[7]=命令 id、[8..87]=参数、[88]=CRC、[89]=保留。Windows 的 HID 缓冲区还要在前面多一个 Report ID 字节（0x00），所以总长 91，且「结构体第 k 字节」= 本文件的 b[k+1]。",
+  "default": "standard90",
+  "protocols": {
+    "standard90": {
+      "desc": "Class 0x07 / Cmd 0x80 读电量，Cmd 0x84 读充电",
+      "match": { "featureLength": 91 },
+      "transport": "feature",
+      "tx": {
+        "length": 91,
+        "reportId": "00",
+        "bytes": { "2": "1f", "6": "02", "7": "07", "8": "80" },
+        "checksum": { "put": 89, "expr": "xor(3, 88)" }
+      },
+      "rx": {
+        "length": 91,
+        "match": [{ "offset": 1, "equals": "02" }],
+        "skip": [{ "offset": 1, "equals": "01" }],
+        "timeoutMs": 300,
+        "attempts": 3,
+        "intervalMs": 40
+      },
+      "battery": { "expr": "b[11] * 100 / 255", "min": 1, "max": 100 },
+      "fields": [
+        {
+          "name": "charging",
+          "desc": "Cmd 0x84 单独查充电状态",
+          "tx": {
+            "length": 91,
+            "reportId": "00",
+            "bytes": { "2": "1f", "6": "02", "7": "07", "8": "84" },
+            "checksum": { "put": 89, "expr": "xor(3, 88)" }
+          },
+          "rx": {
+            "length": 91,
+            "match": [{ "offset": 1, "equals": "02" }],
+            "timeoutMs": 300,
+            "attempts": 2,
+            "intervalMs": 40
+          },
+          "expr": "b[11] == 1"
+        }
+      ],
+      "sample": { "rx": "00 02 1f 00 00 00 02 07 80 00 00 bf", "expect": { "battery": 75 } },
+      "note": "b[2] 是 transaction id：鼠标 0x1f、耳机 0x3f、早期型号 0xff。b[1]=0x02 表示命令成功、0x01 表示设备忙（会被 skip 掉重试）。电量是 0..255 刻度，0xBF=191 对应 74.9%≈75%，不是直接百分比——这是最容易搞错的地方。若读数明显不对，先把 b[11] 换成 b[10] 或 b[12] 试。"
+    }
+  }
+}

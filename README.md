@@ -24,6 +24,7 @@
 - **设置集中在一个文件**：exe 同级 `settings.ini`（带注释、可手工编辑），界面改动即原子写回。
 - **托盘常驻**：可设置关闭时收进系统托盘、开机静默启动；收托盘 / 最小化时自动停推预览（画面看不到就不传）。
 - **与官方上位机共存**：上位机（GUI）在运行时，通过其本地 HTTP 的 USB 使用权移交（`/usb/handoff/*`）借用 USB，**不需要退出 GUI**。
+- **外设电量**：侧栏「外设」页显示鼠标 / 键盘 / 耳机的品牌、型号与电量。协议是**纯 JSON 配置**（`peripherals/index.json` 按 PID 绑定品牌，`peripherals/brands/<品牌>.json` 写各品牌的读法），新增设备只改 JSON、不用重新编译。
 
 ## 运行环境
 
@@ -47,20 +48,21 @@ npm run tauri build    # 生产构建，只生成 exe（不生成安装包）
 构建产物：
 
 - 可执行文件：`src-tauri/target/release/jiaidian-monitor.exe`
-- 便携包：发版工作流会生成 `jiaidian-monitor-v<版本>.zip`（exe + `assets/` + 卸载脚本）；本地把 exe 与 `assets/` 放一起即可运行
+- 便携包：发版工作流会生成 `jiaidian-monitor-v<版本>.zip`（exe + `assets/` + `peripherals/` + 卸载脚本）；本地把 exe 与 `assets/`、`peripherals/` 放一起即可运行
 
 ### 便携运行布局
 
-把可执行文件和一个 `assets/` 目录放在一起即可绿色运行：
+把可执行文件和 `assets/`、`peripherals/` 目录放在一起即可绿色运行：
 
 ```
 jiaidian-monitor.exe
 settings.ini       全部设置（自动生成，可手工编辑）
 assets/            主题素材（一个主题 = 一层文件夹，文件夹名即主题名）
+peripherals/       外设协议 JSON（index.json + brands/，可直接编辑）
 log/               运行日志（自动创建）
 ```
 
-程序按 **exe 同级 → 当前工作目录** 的顺序找 `assets/`。
+程序按 **exe 同级 → 当前工作目录** 的顺序找 `assets/` 与 `peripherals/`。
 
 ## 工作原理
 
@@ -78,7 +80,11 @@ WinUSB 增量下发 → 设备屏
   `/metrics`（规范单位指标）、`/units`、`/health` 等，`GET /` 是接口索引。
   面板里的自取脚本每秒拉一次 `/metrics`，按 `data-unit` 换算后喂给 `__setSlot`。
 - 与官方上位机共用设备时，通过 `/usb/handoff/start|keepalive|finish` 借用 USB 使用权（租约 120s，程序每 20s 续期）。
-- 设备协议见 `src-tauri/src/live_frame.rs`、`device.rs`、`winusb.rs`。
+- 外设电量走 HID（不是 WinUSB）：枚举 HID 端点的 `VID/PID/UsagePage/Usage/报表长度`，按
+  `peripherals/index.json` 找到品牌与协议档位，再按该品牌 JSON 发查询帧、解析回包。
+  `GET /peripherals` 返回品牌 / 型号 / 电量，`POST /peripherals/refresh` 立即重读配置并轮询一轮。
+- 设备协议见 `src-tauri/src/live_frame.rs`、`device.rs`、`winusb.rs`；外设协议见
+  `peripherals/README.md`（字段全集 + 示例）与 `src-tauri/src/peripherals/`。
 
 ## 目录结构
 
@@ -101,8 +107,10 @@ src-tauri/              Rust 后端
     metrics.rs          指标组装（含 Win32 磁盘 / 网络 / 开机时长）
     units.rs            单位换算
     api.rs              本机数据 API（仅回环，8766；IPv4 + IPv6 双监听）
+    peripherals/        外设电量：HID 枚举 + JSON 协议引擎（expr / model / hid / mod）
     tray.rs / single.rs 托盘、单实例
   capabilities/         窗口权限
+peripherals/            外设协议 JSON 库（index.json + brands/），随包发布、用户可直接改
 ```
 
 ## 第三方组件

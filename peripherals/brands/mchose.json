@@ -1,0 +1,72 @@
+{
+  "brand": "mchose",
+  "name": "迈从",
+  "note": "迈从有好几套互不兼容的协议：A5 V2 Ultra 用短报文 0x11（载荷整体异或 0xFF）、G87 V2 用 65 字节集合、Z75S 用 20 字节且要先校验型号 Token。都靠 index.json 里精确 PID 分派。",
+  "default": "a5v2",
+  "protocols": {
+    "a5v2": {
+      "desc": "A5 V2 Ultra：短报文 0x11 + CMD_IDENTITY(0x06)，载荷异或 0xFF",
+      "match": { "usagePage": "FF01", "inputLength": 32 },
+      "transport": "output",
+      "tx": {
+        "length": 32,
+        "reportId": "00",
+        "bytes": { "1": "11", "2": "06" },
+        "checksum": { "put": 31, "expr": "0" }
+      },
+      "rx": { "length": 32, "match": [{ "offset": 1, "equals": "11" }], "timeoutMs": 400, "attempts": 3 },
+      "battery": { "expr": "b[11] ^ 0xff", "min": 1, "max": 100 },
+      "fields": [
+        { "name": "charging", "expr": "(b[12] ^ 0xff) != 0" }
+      ],
+      "sample": { "rx": "00 11 06 00 00 00 00 00 00 00 00 aa ff", "expect": { "battery": 85, "charging": false } },
+      "note": "载荷每个字节都和 0xFF 异或，所以读出来要再异或一次还原。b[11]^0xFF 是电量、b[12]^0xFF 是充电。"
+    },
+    "g87v2": {
+      "desc": "G87 V2：优先 UsagePage 1 / Usage 0 的 65 字节集合（MI_01），发未编号帧",
+      "match": { "usagePage": "0001", "usage": "0000", "inputLength": 65 },
+      "transport": "output",
+      "tx": {
+        "length": 65,
+        "reportId": "00",
+        "bytes": { "1": "55", "2": "05", "3": "00", "4": "38", "5": "38" },
+        "checksum": { "put": 64, "expr": "sum(0, 63) & 0xff" }
+      },
+      "rx": { "length": 65, "match": [{ "offset": 0, "equals": "aa" }, { "offset": 1, "equals": "05" }], "timeoutMs": 500, "attempts": 3 },
+      "battery": { "expr": "b[40]", "min": 1, "max": 100 },
+      "fields": [
+        { "name": "charging", "expr": "b[41] != 0" }
+      ],
+      "sample": { "rx": "aa 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 4b 01", "expect": { "battery": 75, "charging": true } },
+      "note": "回包前两字节是 AA 05，电量在 offset 40、充电在 offset 41。这台设备的键盘集合在 UsagePage 1，不是常见的高端厂商页。"
+    },
+    "z75s": {
+      "desc": "Z75S：0xFF02/0x0002 20 字节集合，先命令 0x05 校验型号 Token 0A0000000009 做同 VID 隔离，再命令 0x4A 查电量",
+      "match": { "usagePage": "FF02", "usage": "0002", "inputLength": 20, "outputLength": 20 },
+      "transport": "output",
+      "tx": [
+        {
+          "desc": "0x05 型号 Token 校验（隔离同 VID 的其它设备）",
+          "length": 20,
+          "reportId": "00",
+          "bytes": { "1": "05", "2": "0a", "3": "00", "4": "00", "5": "00", "6": "00", "7": "09" },
+          "delayMs": 30
+        },
+        {
+          "desc": "0x4A 查电量",
+          "length": 20,
+          "reportId": "00",
+          "bytes": { "1": "4a" },
+          "checksum": { "put": 19, "expr": "sum(0, 18) & 0xff" }
+        }
+      ],
+      "rx": { "length": 20, "match": [{ "offset": 1, "equals": "4a" }], "timeoutMs": 400, "attempts": 3 },
+      "battery": { "expr": "b[5]", "min": 1, "max": 100 },
+      "fields": [
+        { "name": "charging", "expr": "(b[6] >> 4) != 0", "note": "b[6] 的高半字节是充电标志" }
+      ],
+      "sample": { "rx": "00 4a 00 00 00 4b 10", "expect": { "battery": 75, "charging": true } },
+      "note": "第 19 字节是前 19 字节累加和。先发 0x05 是为了排除同 VID 的其它设备，如果省略可能读到别的设备的回包。"
+    }
+  }
+}

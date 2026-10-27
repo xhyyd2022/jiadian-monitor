@@ -1,0 +1,28 @@
+{
+  "brand": "edifier",
+  "name": "漫步者",
+  "note": "花再 Halo Space：UsagePage 0xFF14 / Usage 0x0001，64 字节中断（要避开 0xFF13 的 62 字节固件通道）。帧头 2E AA EC，载荷逐字节异或 0xA5，校验是从下标 1 起算的 8 位累加和。",
+  "default": "haloSpace",
+  "protocols": {
+    "haloSpace": {
+      "desc": "0xD0 读电量；0xC9 读名称；0xC6 读固件版本",
+      "match": { "usagePage": "FF14", "usage": "0001", "inputLength": 64 },
+      "transport": "output",
+      "tx": {
+        "length": 64,
+        "reportId": "00",
+        "bytes": { "1": "2e", "2": "aa", "3": "ec", "4": "d0", "5": "00", "6": "01" },
+        "checksum": { "put": 63, "expr": "sum(1, 62) & 0xff" }
+      },
+      "rx": {
+        "length": 64,
+        "match": [{ "offset": 1, "equals": "2f" }, { "offset": 2, "equals": "bb" }],
+        "timeoutMs": 500,
+        "attempts": 3
+      },
+      "battery": { "expr": "b[8] ^ 0xa5", "min": 1, "max": 100 },
+      "sample": { "rx": "00 2f bb ec 00 01 00 00 86", "expect": { "battery": 35 } },
+      "note": "0x86 ^ 0xA5 = 0x23 = 35%，所以电量字节要先异或 0xA5 还原。回包帧头是 2F BB EC（对应发送的 2E AA EC）。这台 2.4G 下接充电线会被硬件强制关机，固件也不回充电状态，所以故意不写 charging —— 界面显示未知，不编值。"
+    }
+  }
+}

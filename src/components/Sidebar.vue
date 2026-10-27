@@ -7,6 +7,7 @@ defineEmits<{ (e: "nav", id: string): void; (e: "theme"): void }>();
 const items = [
   { id: "home", icon: "line-md:home", label: "首页" },
   { id: "perf", icon: "line-md:gauge", label: "性能" },
+  { id: "peripherals", icon: "line-md:monitor", label: "外设" },
   { id: "materials", icon: "line-md:folder", label: "素材" },
   { id: "settings", icon: "line-md:cog", label: "设置" },
 ];

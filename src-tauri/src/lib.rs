@@ -10,6 +10,7 @@ mod lhws_install;
 mod source_lhws;
 mod logging;
 mod metrics;
+mod peripherals;
 mod units;
 
 /// 离屏面板 WebView2 的 CDP 端口（`main.rs` 设环境变量时要用）。
@@ -448,6 +449,52 @@ fn import_panel(src: String) -> Result<assets::Theme, String> {
     assets::import(&src)
 }
 
+/// 外设（鼠标 / 键盘 / 耳机）的品牌、型号、电量。协议来自 exe 同级 `peripherals/` 下的 JSON。
+#[tauri::command]
+fn peripherals_state() -> serde_json::Value {
+    peripherals::json()
+}
+
+/// 重新读盘并立刻轮询一轮（界面上「刷新」按钮用）。
+#[tauri::command]
+async fn peripherals_refresh() -> serde_json::Value {
+    let _ = tauri::async_runtime::spawn_blocking(|| {
+        peripherals::refresh();
+        let _ = peripherals::dump_text();
+    })
+    .await;
+    peripherals::json()
+}
+
+/// 外设协议库目录（给界面显示「配置在哪儿」）。
+#[tauri::command]
+fn peripherals_dir() -> Option<String> {
+    peripherals::dir().map(|p| p.to_string_lossy().to_string())
+}
+
+/// 无界面：跑一轮外设识别并输出 JSON（供 `--peripherals-dump`）。
+pub fn dump_peripherals_json() -> String {
+    peripherals::dump_text()
+}
+
+/// 无界面：列出本机 HID 端点（供 `--peripherals-hid`）。
+pub fn dump_peripherals_hid() -> String {
+    peripherals::hid_dump()
+}
+
+/// 无界面：回放所有品牌 JSON 里的 `sample`（供 `--peripherals-selftest`）。
+pub fn peripherals_selftest() -> Result<String, String> {
+    let (checked, fails) = peripherals::selftest();
+    if fails.is_empty() {
+        Ok(format!("外设协议自检通过：回放 {checked} 条 sample"))
+    } else {
+        Err(format!(
+            "外设协议自检失败（回放 {checked} 条）：\n{}",
+            fails.join("\n")
+        ))
+    }
+}
+
 /// 关闭按钮（设置开启时）：收进系统托盘；托盘不可用则回退任务栏最小化。
 #[tauri::command]
 fn hide_to_tray(app: tauri::AppHandle) -> Result<String, String> {
@@ -633,6 +680,9 @@ pub fn run() {
     // 本地指标 API：面板网页直接 fetch，无需注入。
     api::spawn();
 
+    // 外设电量：后台线程按 `peripherals/index.json` 的间隔轮询 HID 设备。
+    peripherals::spawn();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -701,6 +751,9 @@ pub fn run() {
             link_state,
             assets_dir,
             import_panel,
+            peripherals_state,
+            peripherals_refresh,
+            peripherals_dir,
             hide_to_tray
         ])
         .build(tauri::generate_context!())

@@ -1,0 +1,32 @@
+{
+  "brand": "acer",
+  "name": "宏碁",
+  "note": "OMR 系列。无线接收器 249A:5C2F、有线 248A:5D2E/5E2E。33/33 字节中断端点。无线下 byte[15] 会漂移，充电状态不可信。",
+  "default": "omr33",
+  "protocols": {
+    "omr33": {
+      "desc": "33 字节中断：发 00 10 00…，回包里 [14] 是电量",
+      "match": { "usagePage": "FF01", "usage": "0010", "inputLength": 33, "outputLength": 33 },
+      "transport": "output",
+      "tx": {
+        "length": 33,
+        "reportId": "00",
+        "bytes": { "1": "10", "2": "00" },
+        "checksum": { "put": 32, "expr": "sum(0, 31) & 0xff" }
+      },
+      "rx": {
+        "length": 33,
+        "match": [{ "offset": 0, "equals": "00" }, { "offset": 1, "equals": "10" }, { "offset": 3, "equals": "01" }],
+        "timeoutMs": 500,
+        "attempts": 3
+      },
+      "battery": { "expr": "b[14]", "min": 1, "max": 100 },
+      "fields": [
+        { "name": "model", "ascii": { "offset": 5, "length": 4 }, "note": "回包里 4 字节 ASCII 设备 id，如 R332" },
+        { "name": "firmware", "expr": "b[9] | (b[10] << 8)", "min": 0, "max": 65535 }
+      ],
+      "sample": { "rx": "00 10 00 01 0b 52 33 33 32 01 00 00 00 00 4b 00", "expect": { "battery": 75, "model": "R332" } },
+      "note": "无线接收器下 byte[15] 会漂移，所以这里故意不写 charging —— 拿不到就不猜，界面会显示未知。"
+    }
+  }
+}
