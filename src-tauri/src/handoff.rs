@@ -1,7 +1,8 @@
 //! 本地 HTTP API 客户端：`/usb/status` 与 `/usb/handoff/*`（GUI 在 `127.0.0.1:8765`）。
 //!
 //! 移交（handoff）让 GUI 暂时让出 USB，本 app 因此可与 GUI 共存。
-//! 租约默认 90s，须每 ~20s keepalive；退出前必须 `finish`。
+//! 租约由调用方申请：管线固定申请 **120s**（`handoff_start(..., 120)`），
+//! 每 ~20s keepalive；退出前必须 `finish`。
 
 use serde_json::{json, Value};
 use std::time::Duration;

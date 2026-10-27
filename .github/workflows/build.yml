@@ -72,33 +72,34 @@ jobs:
 
       # `tauri build` 会先跑 package.json 的 beforeBuildCommand（vite build），
       # 再编译 Rust 并把前端产物内嵌进 exe。Tauri 2 已不需要 custom-protocol feature。
-      - name: 构建（安装包 + 可执行文件）
-        run: npm run tauri build
+      # 只出 exe，不生成 NSIS/MSI 安装包；便携 zip 在下一步组装。
+      - name: 构建（仅可执行文件）
+        run: npm run tauri build -- --no-bundle
 
       - name: 组装便携包
         shell: pwsh
         run: |
           $rel = 'src-tauri/target/release'
           $out = 'portable'
-          New-Item -ItemType Directory -Force -Path "$out/assets" | Out-Null
+          $zip = "jiaidian-monitor-v$env:VERSION.zip"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
 
           Copy-Item "$rel/jiaidian-monitor.exe" $out -Force
-          if (Test-Path 'assets/icon.png') { Copy-Item 'assets/icon.png' "$out/assets/" -Force }
+          # 递归带上 assets（图标 + 主题）；没有 assets 目录时跳过
+          if (Test-Path 'assets') { Copy-Item 'assets' $out -Recurse -Force }
           # 可选：若仓库内提供了卸载辅助工具，则一并打包（与 exe 同级才能按 %~dp0 找到它）
           if (Test-Path 'scripts/uninstall-lhws.bat') { Copy-Item 'scripts/uninstall-lhws.bat' $out -Force }
 
-          Compress-Archive -Path "$out/*" -DestinationPath 'jiaidian-monitor-portable.zip' -Force
-          Get-ChildItem 'jiaidian-monitor-portable.zip' | Select-Object Name, Length
+          Compress-Archive -Path "$out/*" -DestinationPath $zip -Force
+          Get-ChildItem $zip | Select-Object Name, Length
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: jiaidian-monitor-windows
-          if-no-files-found: warn
+          if-no-files-found: error
           path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
-            jiaidian-monitor-portable.zip
+            jiaidian-monitor-v*.zip
 
       # ── 发版步骤 ────────────────────────────────────────────────────────────
 
@@ -156,6 +157,4 @@ jobs:
           body_path: release-body.md
           prerelease: ${{ inputs.prerelease }}
           files: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
-            jiaidian-monitor-portable.zip
+            jiaidian-monitor-v*.zip

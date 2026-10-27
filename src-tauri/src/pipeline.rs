@@ -17,6 +17,17 @@ static CANCEL: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
 /// 管线是否在跑（退出时用来等它收尾，好把租约还回去）。
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
+/// 管线线程的收尾守卫：无论从哪条路径退出（正常运行 / `?` 提前返回 / 线程内 panic 展开），
+/// 都要把 `RUNNING` 放下，避免 `stop_blocking` 白等 4s、下一轮启动误判「上一轮卡住」。
+struct RunningGuard;
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        RUNNING.store(false, Ordering::SeqCst);
+        // 兜底：管线退出后也算「就绪」，免得前端在接管失败/提前退出时白等
+        LINK_READY.store(true, Ordering::SeqCst);
+    }
+}
+
 /// 前端预览通道（前端通过 `preview_subscribe` 交进来）。
 ///
 /// **不要改回 `app.emit`**：`emit` 的实现是把整个 payload 内联进一段 JS 源码再 `eval`
@@ -90,6 +101,11 @@ pub fn frame_interval() -> Duration {
 const IDLE_AFTER: u32 = 3;
 /// 静止时的抓屏间隔（~3fps）。不宜再拉长：最坏情况是「值刚变」要多等这么久才被抓到。
 const INTERVAL_IDLE: Duration = Duration::from_millis(300);
+
+/// 单次等 CDP 响应的上限。`wait_result` 只按 id 匹配、原本没有超时：
+/// 页面导航、渲染进程被回收、WebView2 卡死时，这一等就是永远 ——
+/// 管线不再抓帧、也不再查 `cancel`，只能杀进程。5s 足够覆盖一次正常截图（~25ms）。
+const CDP_RECV_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 停止当前管线（若有）。
 pub fn stop() {
@@ -202,42 +218,114 @@ pub fn start(
     RUNNING.store(true, Ordering::SeqCst);
     LINK_READY.store(false, Ordering::SeqCst); // 本轮 USB 还没接管，前端先别抢
 
-    tauri::async_runtime::spawn(async move {
-        // 预览限频到目标帧率：不影响 USB 下发，只砍掉超过帧率的 IPC / 前端解码开销
-        let mut last: Option<std::time::Instant> = None;
-        let cb = move |png: &[u8], _fw: u32, _fh: u32, _frames: u64| {
-            // 主窗口收进托盘 / 最小化时看不到预览 → 直接不发，省掉这一整趟编码、传输与解码；
-            // 窗口恢复后下一帧自动续上，无需任何手工操作。
-            if let Some(win) = app.get_webview_window("main") {
-                let hidden =
-                    !win.is_visible().unwrap_or(true) || win.is_minimized().unwrap_or(false);
-                if hidden {
-                    return;
-                }
-            }
-            let now = std::time::Instant::now();
-            if let Some(t) = last {
-                if now.duration_since(t) < frame_interval() {
-                    return;
-                }
-            }
-            last = Some(now);
-            // 走 Channel 推原始 PNG 字节（不是 base64、不是事件）
-            preview_send(png.to_vec());
-        };
-        if let Err(e) = run_inner(cb, ws, url, serial, w, h, cancel, None).await {
-            crate::logging::error(&format!("render 出错：{e}"));
+    // USB 接管放在管线线程**之外**同步做：
+    // `UsbLink::open` 内部是同步 USB / HTTP（含移交重试，最坏受 `OPEN_BUDGET` 约束）。
+    // 放在渲染线程里会让 `render_start` 已经返回、USB 却还没接管；放在 Tauri async
+    // 任务里则会占住 tokio worker。这里由 `render_start` 的阻塞池调用，返回前就能
+    // 确定是「已接管」还是「仅预览」。
+    let link_gen = match UsbLink::open(serial, w, h) {
+        Ok(g) => {
+            crate::logging::info(&format!("USB 接管完成 +{}ms", t0.elapsed().as_millis()));
+            g
         }
+        Err(e) => {
+            crate::logging::warn(&format!("USB 不可用，仅预览：{e}"));
+            None
+        }
+    };
+    // 接管尝试已结束（无论成败）：前端可以安全读信息了（成功则复用句柄、失败则自己开）
+    LINK_READY.store(true, Ordering::SeqCst);
+    // 线程创建失败时闭包会被丢弃，链路不会有人收尾 —— 先留一份代数用于兜底。
+    let link_gen_for_error = link_gen;
+
+    // 管线跑在**独立线程 + current_thread 运行时**里，不再占用 Tauri 的 async worker。
+    // `with_link` 里的同步 USB 读写（含最长 3s 的管道超时）只阻塞这一条线程；
+    // 界面、命令、API 轮询都不会被它拖住。CDP 断开后的重连也在这里自愈。
+    let spawn = std::thread::Builder::new()
+        .name("render-pipeline".into())
+        .spawn(move || {
+            let _running = RunningGuard;
+            // 预览限频到目标帧率：不影响 USB 下发，只砍掉超过帧率的 IPC / 前端解码开销
+            let app_preview = app.clone();
+            let mut last: Option<std::time::Instant> = None;
+            let cb = move |png: &[u8], _fw: u32, _fh: u32, _frames: u64| {
+                // 主窗口收进托盘 / 最小化时看不到预览 → 直接不发，省掉这一整趟编码、传输与解码；
+                // 窗口恢复后下一帧自动续上，无需任何手工操作。
+                if let Some(win) = app_preview.get_webview_window("main") {
+                    let hidden =
+                        !win.is_visible().unwrap_or(true) || win.is_minimized().unwrap_or(false);
+                    if hidden {
+                        return;
+                    }
+                }
+                let now = std::time::Instant::now();
+                if let Some(t) = last {
+                    if now.duration_since(t) < frame_interval() {
+                        return;
+                    }
+                }
+                last = Some(now);
+                // 走 Channel 推原始 PNG 字节（不是 base64、不是事件）
+                preview_send(png.to_vec());
+            };
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    crate::logging::error(&format!("创建管线运行时失败：{e}"));
+                    // 线程已拿到接管权，但还没进监督循环：这里自己把链路还掉，避免泄漏。
+                    if let Some(g) = link_gen {
+                        close_link_if_gen(g);
+                    }
+                    return;
+                }
+            };
+            if let Err(e) = rt.block_on(run_supervised(
+                cb,
+                ws,
+                url,
+                w,
+                h,
+                cancel,
+                None,
+                Some(app),
+                render::PANEL_CDP_PORT,
+                link_gen,
+            )) {
+                crate::logging::error(&format!("render 出错：{e}"));
+            }
+        });
+    if let Err(e) = spawn {
         RUNNING.store(false, Ordering::SeqCst);
-        // 兜底：管线退出后也算「就绪」，免得前端在接管失败/提前退出时白等
         LINK_READY.store(true, Ordering::SeqCst);
-    });
+        if let Some(g) = link_gen_for_error {
+            close_link_if_gen(g);
+        }
+        return Err(format!("创建渲染线程失败：{e}"));
+    }
     Ok("started".into())
 }
 
 /// 面板文件名（在 CDP 目标里区分面板页 vs UI 页）。
 fn panel_file_name(html: &str) -> String {
     html.rsplit(['/', '\\']).next().unwrap_or(html).to_string()
+}
+
+/// WebView2 启动参数（必须与 `tauri.conf.json` 里主窗口的
+/// `additionalBrowserArgs` **完全一致**）：同一个 user-data-dir 下，
+/// 主窗口和面板窗口的参数不一致时 WebView2 会拒绝复用环境。
+///
+/// 为什么不能只设 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`：wry 0.57 总会调用
+/// `SetAdditionalBrowserArguments`，WebView2 在设置了该项后会忽略同名环境变量。
+fn webview2_args() -> String {
+    format!(
+        "--remote-debugging-port={} \
+         --disable-features=CalculateNativeWinOcclusion,msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+         --autoplay-policy=no-user-gesture-required",
+        render::PANEL_CDP_PORT
+    )
 }
 
 /// 复用 / 创建离屏面板窗口（320×240，放到屏幕外 —— 隐藏窗口 Chromium 会停渲染）。
@@ -261,6 +349,7 @@ fn ensure_panel_webview(app: &AppHandle, url: &str, w: u32, h: u32) -> Result<()
         .resizable(false)
         .skip_taskbar(true)
         .visible(false) // 真·无头：不显示窗口（隐藏后 captureScreenshot 仍可用，实测过）
+        .additional_browser_args(&webview2_args())
         .build()
         .map_err(|e| format!("创建离屏面板窗口失败：{e}"))?;
     crate::logging::info("已创建离屏面板窗口（隐藏）");
@@ -521,7 +610,27 @@ pub fn run_headless(
         let port = render::CLI_CDP_PORT;
         let mut browser = render::Browser::launch(&exe, w, h, &url, port, &profile)?;
         let ws = render::page_ws_url(port)?;
-        let r = run_inner(cb, ws, url, serial, w, h, cancel, Some(seconds)).await;
+        // 和 GUI 路径一致：USB 先接管，再进管线；拿不到就只预览。
+        let link_gen = match UsbLink::open(serial, w, h) {
+            Ok(g) => g,
+            Err(e) => {
+                crate::logging::warn(&format!("USB 不可用，仅预览：{e}"));
+                None
+            }
+        };
+        let r = run_supervised(
+            cb,
+            ws,
+            url,
+            w,
+            h,
+            cancel,
+            Some(seconds),
+            None,
+            port,
+            link_gen,
+        )
+        .await;
         browser.kill();
         let _ = render::close_browser(port).await;
         r
@@ -639,26 +748,17 @@ fn looks_black(rgb565: &[u8]) -> bool {
     rgb565.iter().step_by(256).all(|&b| b == 0)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
-    mut on_frame: F,
-    ws: String,
-    url: String,
-    serial: Option<String>,
-    w: u32,
-    h: u32,
-    cancel: Arc<AtomicBool>,
-    seconds: Option<f64>,
-) -> Result<(u64, u64), String> {
-    let t0 = std::time::Instant::now();
-    let mut cdp = render::Cdp::connect(&ws).await?;
+/// 建立一次 CDP 会话（连接、导航、等页面就绪、注入自取脚本、锁视口）。
+/// 会话失败只影响这一轮，由 [`run_supervised`] 重连。
+async fn setup_session(ws: &str, url: &str, w: u32, h: u32) -> Result<render::Cdp, String> {
+    let mut cdp = render::Cdp::connect(ws).await?;
     cdp.cmd("Page.enable", json!({})).await?;
     // 先导航到面板并等页面就绪 —— 否则首帧会抓到别的页面
     let _ = cdp.call("Page.navigate", json!({ "url": url })).await;
     // 等「真的加载完」而不是死等固定时长：file:// 通常 <100ms，这段直接决定切换延迟
     tokio::time::sleep(Duration::from_millis(80)).await;
     let ready = wait_page_ready(&mut cdp, 3000).await;
-    crate::logging::info(&format!("页面就绪 ready={ready} +{}ms", t0.elapsed().as_millis()));
+    crate::logging::info(&format!("页面就绪 ready={ready}"));
     // 注入自取脚本：**导航之后**注入。导航会重建 JS 上下文，旧定时器自然消失，
     // 所以复用时不累积；脚本等 `__setSlot` 就绪后自动从本地 API 取真值。
     let _ = cdp.call("Runtime.evaluate", json!({ "expression": pull_js() })).await;
@@ -670,34 +770,165 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
     .await?;
     // 等这次 resize 生效
     tokio::time::sleep(Duration::from_millis(150)).await;
-    crate::logging::info(&format!("视口锁定 +{}ms", t0.elapsed().as_millis()));
+    crate::logging::info("视口锁定");
+    Ok(cdp)
+}
 
-    // USB（拿不到就只预览、不下发）。
-    // `has_usb` = 接管成功（**新开或复用同一台都算**）；`link_gen` = 仅当本轮**自己新打开**时才是
-    // `Some(gen)`（收尾只关这一代，避免误关新一轮的链路）。
-    // 接管放到**阻塞线程**里做：`UsbLink::open` 内部是同步 USB / HTTP 调用（含移交重试，
-    // 最坏受 `OPEN_BUDGET` 约束）。直接在 async 任务里跑会占住一个 tokio worker，
-    // 几次并发就能把运行时拖垮 —— 那时所有 invoke 都不返回，界面就是「死机」。
-    let (ow, oh) = (w, h);
-    let (mut has_usb, link_gen) =
-        match tauri::async_runtime::spawn_blocking(move || UsbLink::open(serial, ow, oh)).await {
-            Ok(Ok(g)) => {
-                crate::logging::info(&format!("USB 已接管 +{}ms", t0.elapsed().as_millis()));
-                (true, g)
+/// 重连时找一个可用的面板 CDP 页面。先短探（页面通常还在，直接重连最快）；
+/// 找不到再让离屏窗口重新导航；仍不行才关掉窗口重建（覆盖渲染进程被回收）。
+fn acquire_panel_ws(
+    app: Option<&AppHandle>,
+    port: u16,
+    needle: &str,
+    url: &str,
+    w: u32,
+    h: u32,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err("用户停止".into());
+    }
+    if let Ok(ws) = render::page_ws_url_matching_timeout(port, needle, Duration::from_secs(3)) {
+        return Ok(ws);
+    }
+    let Some(app) = app else {
+        return Err("找不到面板页面（CLI 模式无法重建窗口）".into());
+    };
+    if cancel.load(Ordering::SeqCst) {
+        return Err("用户停止".into());
+    }
+    crate::logging::warn("面板页面丢失，尝试重新导航…");
+    ensure_panel_webview(app, url, w, h)?;
+    if let Ok(ws) = render::page_ws_url_matching_timeout(port, needle, Duration::from_secs(8)) {
+        return Ok(ws);
+    }
+    if cancel.load(Ordering::SeqCst) {
+        return Err("用户停止".into());
+    }
+    crate::logging::warn("面板页面仍未恢复，关闭并重建离屏窗口…");
+    if let Some(win) = app.get_webview_window("panel") {
+        let _ = win.close();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    ensure_panel_webview(app, url, w, h)?;
+    render::page_ws_url_matching_timeout(port, needle, Duration::from_secs(10))
+}
+
+fn reconnect_backoff(fails: u32) -> Duration {
+    let shift = fails.min(4);
+    Duration::from_millis(500u64.saturating_mul(1u64 << shift).min(5_000))
+}
+
+async fn wait_or_cancel(cancel: Arc<AtomicBool>, dur: Duration) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(dur) => false,
+        _ = wait_cancel(cancel) => true,
+    }
+}
+
+/// 管线监督循环：CDP 会话断开（渲染进程被回收、页面导航、WebView2 卡死）时自动重连，
+/// **不重新移交 USB** —— 设备句柄由本函数持有，跨会话复用；只有用户停止 / 到达运行时长 / 设备
+/// 被拔掉（`run_inner` 内部关链路、退回仅预览）才结束。
+#[allow(clippy::too_many_arguments)]
+async fn run_supervised<F: FnMut(&[u8], u32, u32, u64)>(
+    mut on_frame: F,
+    initial_ws: String,
+    url: String,
+    w: u32,
+    h: u32,
+    cancel: Arc<AtomicBool>,
+    seconds: Option<f64>,
+    app: Option<AppHandle>,
+    cdp_port: u16,
+    link_gen: Option<u64>,
+) -> Result<(u64, u64), String> {
+    let _link_guard = LinkGuard(link_gen);
+    let needle = panel_file_name(&url);
+    let started = Instant::now();
+    let mut next_ws = Some(initial_ws);
+    let mut frames = 0u64;
+    let mut sent = 0u64;
+    let mut fails = 0u32;
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            break;
+        }
+        let remaining = seconds.map(|s| s - started.elapsed().as_secs_f64());
+        if let Some(r) = remaining {
+            if r <= 0.0 {
+                break;
             }
-            Ok(Err(e)) => {
-                crate::logging::warn(&format!("USB 不可用，仅预览：{e}"));
-                (false, None)
+        }
+        let ws = match next_ws.take() {
+            Some(ws) => ws,
+            None => match acquire_panel_ws(
+                app.as_ref(),
+                cdp_port,
+                &needle,
+                &url,
+                w,
+                h,
+                cancel.as_ref(),
+            ) {
+                Ok(ws) => ws,
+                Err(e) => {
+                    if cancel.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    fails += 1;
+                    if fails == 1 || fails % 5 == 0 {
+                        crate::logging::warn(&format!(
+                            "面板页面不可用（{e}），第 {fails} 次重试…"
+                        ));
+                    }
+                    if wait_or_cancel(cancel.clone(), reconnect_backoff(fails)).await {
+                        break;
+                    }
+                    continue;
+                }
+            },
+        };
+        match run_inner(&mut on_frame, ws, url.clone(), w, h, cancel.clone(), remaining).await {
+            Ok((f, s)) => {
+                frames += f;
+                sent += s;
+                break;
             }
             Err(e) => {
-                crate::logging::warn(&format!("USB 接管任务异常，仅预览：{e}"));
-                (false, None)
+                if cancel.load(Ordering::SeqCst) {
+                    break;
+                }
+                fails += 1;
+                if fails == 1 || fails % 5 == 0 {
+                    crate::logging::warn(&format!("渲染会话中断（{e}），第 {fails} 次重连…"));
+                }
+                if wait_or_cancel(cancel.clone(), reconnect_backoff(fails)).await {
+                    break;
+                }
             }
-        };
-    // 任何退出路径都释放设备（只释放**本轮自己打开**的那一代）
-    let _link_guard = LinkGuard(link_gen);
-    // 接管尝试已结束（无论成败）：前端可以安全读信息了（成功则复用句柄、失败则自己开）
-    LINK_READY.store(true, Ordering::SeqCst);
+        }
+    }
+    Ok((frames, sent))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
+    mut on_frame: F,
+    ws: String,
+    url: String,
+    w: u32,
+    h: u32,
+    cancel: Arc<AtomicBool>,
+    seconds: Option<f64>,
+) -> Result<(u64, u64), String> {
+    let t0 = std::time::Instant::now();
+    let mut cdp = setup_session(&ws, &url, w, h).await?;
+    // 设备句柄由 `run_supervised` 统一持有：CDP 会话断开重连时**不重新移交 USB**。
+    // 每轮重新读一次 `LINK_OPEN`：上一轮若因拔线被关掉，这里自然退回仅预览。
+    let mut has_usb = link_open();
+    if !has_usb {
+        crate::logging::warn("USB 未接管，本轮仅预览");
+    }
 
     // WebView2 **不支持** `Page.startScreencast`（实测收不到 screencastFrame），只能轮询截屏。
     // 抓屏节奏 = 下发节奏：把下一张截图提前 `SHOT_EST` 发出去，让它正好在「到点」前后回来。
@@ -724,13 +955,21 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
                 break "到达运行时长";
             }
         }
-        // 等这一张的响应（其间的事件丢掉）；select 让 stop() 立刻生效
+        // 等这一张的响应（其间的事件丢掉）；select 让 stop() 立刻生效。
+        // **必须套超时**：页面导航/渲染进程被回收时 CDP 可能永远不回，旧版会卡死在这里。
         let data = tokio::select! {
-            r = wait_result(&mut cdp, req_id) => match r {
-                Some(d) => d,
-                None => {
+            r = tokio::time::timeout(CDP_RECV_TIMEOUT, wait_result(&mut cdp, req_id)) => match r {
+                Ok(Some(d)) => d,
+                Ok(None) => {
                     crate::logging::warn("CDP 收帧通道关闭（渲染进程可能已崩溃/被回收）");
                     break "CDP 断开";
+                }
+                Err(_) => {
+                    crate::logging::warn(&format!(
+                        "CDP 等截屏响应超时（{}ms），准备重连",
+                        CDP_RECV_TIMEOUT.as_millis()
+                    ));
+                    break "CDP 超时";
                 }
             },
             _ = wait_cancel(cancel.clone()) => break "用户停止",
@@ -743,8 +982,21 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
         } else if now >= next_send {
             // 到点才解码下发（省掉超目标帧率的解码 + 差分 + USB）
             // base64 只解一次：原始 PNG 给预览（走 Channel 二进制），RGB565 给面板。
-            let png = render::decode_b64(&data)?;
-            let (rgb565, fw, fh) = render::png_to_rgb565(&png)?;
+            // 解码/转换失败不再 `?` 打死整条管线，而是交给 `run_supervised` 重连。
+            let png = match render::decode_b64(&data) {
+                Ok(p) => p,
+                Err(e) => {
+                    crate::logging::warn(&format!("截屏 base64 解码失败，准备重连：{e}"));
+                    break "帧解码失败";
+                }
+            };
+            let (rgb565, fw, fh) = match render::png_to_rgb565(&png) {
+                Ok(v) => v,
+                Err(e) => {
+                    crate::logging::warn(&format!("PNG→RGB565 失败，准备重连：{e}"));
+                    break "帧转换失败";
+                }
+            };
             if fw != w || fh != h {
                 TxStats::warn_throttled(
                     &mut st.last_fail_warn,
@@ -820,8 +1072,8 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
                                 now,
                                 &format!("USB 下发失败（仍在重试）：{e}"),
                             );
-                            // 设备被拔掉：句柄已失效，继续每帧重试只会让 `with_link` 一直占着
-                            // LINK 锁、并且每帧等满管道超时（3s）→ 轮询和其它命令全被拖住，
+                            // 设备被拔掉：句柄已失效，继续每帧重试只会让每帧等满管道
+                            // 超时（3s），设备命令也会排在同一把 I/O 锁后面 →
                             // 界面表现为死机。立刻释放链路、退回「仅预览」，等用户重新插好。
                             if link_unusable(&e) {
                                 crate::logging::warn(&format!("设备已断开，停止下发（仅预览）：{e}"));
@@ -879,15 +1131,17 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
         };
     };
 
-    // 收尾：只关**本轮自己打开的**那一代链路（若已被新一轮接管则不碰）
-    if let Some(g) = link_gen {
-        close_link_if_gen(g);
-    }
     crate::logging::info(&format!(
-        "管线退出（{reason}）frames={frames} usb_sent={sent} +{}ms",
+        "渲染会话结束（{reason}）frames={frames} usb_sent={sent} +{}ms",
         t0.elapsed().as_millis()
     ));
-    Ok((frames, sent))
+    // 「用户停止 / 到达运行时长」= 正常结束；其余（CDP 断开/超时/发送失败/解码失败）
+    // 交给 `run_supervised` 重连，不能直接结束整条管线。
+    if reason == "用户停止" || reason == "到达运行时长" {
+        Ok((frames, sent))
+    } else {
+        Err(format!("{reason}"))
+    }
 }
 
 /// 截屏参数：PNG + `optimizeForSpeed`（编码走快路径，省 CPU；文件略大，320×240 无所谓）。
@@ -991,13 +1245,17 @@ impl UsbLink {
 }
 
 /// 全局唯一的已接管设备。
-pub static LINK: Mutex<Option<UsbLink>> = Mutex::new(None);
+///
+/// 外层锁只保护「当前是哪条链路」；真正的 USB 读写由 `UsbLink` 内层锁串行化。
+/// `with_link` 会先克隆 `Arc`、放开外层锁，再进内层锁 —— 这样 `close_link` / 链路查询
+/// 不会被一次 3s 的 USB 管道超时堵死，设备命令之间仍然严格串行。
+pub static LINK: Mutex<Option<Arc<Mutex<UsbLink>>>> = Mutex::new(None);
 
 /// 链路快照（**只给前端轮询用**，不参与任何 USB 操作）。
 ///
-/// 为什么要单独存一份：`with_link` 是**持着 `LINK` 锁**做 USB 读写的，设备异常时单次可能
-/// 等到管道超时（3s）。前端的 `link_state` 每 120ms 查一次，如果也去抢 `LINK`，
-/// 就会有一堆任务堵在锁上把 tokio worker 占满 → 所有 invoke 一起卡住，界面表现为「死机」。
+/// 为什么要单独存一份：链路查询要**永不阻塞**。`with_link` 现在虽然不再持外层锁做 USB，
+/// 但前端每 120ms 查一次，走原子量 + 只做 clone 的短锁仍然最稳，
+/// 不会因为 USB 管道超时（3s）把 tokio worker 占满 → 所有 invoke 一起卡住。
 /// 这里用原子量 + 一把只做 clone 的短锁，轮询永远不会被 USB 阻塞。
 static LINK_OPEN: AtomicBool = AtomicBool::new(false);
 static LINK_SN: Mutex<Option<String>> = Mutex::new(None);
@@ -1035,7 +1293,8 @@ pub fn link_open() -> bool {
     LINK_OPEN.load(Ordering::SeqCst)
 }
 
-/// 管线是否已经做过 USB 接管尝试（`render_start` 返回 ≠ USB 已就绪，需等这个）。
+/// 管线是否已经做过 USB 接管尝试。新版 `render_start` 返回时已完成；
+/// 前端保留这个查询作为后台重连/异常退出的兜底。
 pub fn link_ready() -> bool {
     LINK_READY.load(Ordering::SeqCst)
 }
@@ -1046,16 +1305,22 @@ pub fn link_serial() -> Option<String> {
 }
 
 /// 用共享设备执行一段操作。
+///
+/// 只在取链路时短暂持外层 `LINK` 锁，USB 读写期间持的是内层锁 —— 前端轮询 /
+/// `close_link` 不会因为管道超时（最长 3s）被拖住；并发的设备命令仍按内层锁串行。
 pub fn with_link<T>(f: impl FnOnce(&UsbLink) -> Result<T, String>) -> Result<T, String> {
-    let g = LINK.lock().unwrap();
-    let l = g.as_ref().ok_or("设备未接管")?;
-    f(l)
+    let link = {
+        let g = LINK.lock().unwrap();
+        g.as_ref().cloned().ok_or("设备未接管")?
+    };
+    let guard = link.lock().unwrap();
+    f(&guard)
 }
 
 /// 下发失败是否意味着「这条链路已经不能用了」：
 /// 设备物理断开（`[GONE]`），或链路已被释放（未接管 / 句柄已释放）。
 /// 命中就应停止下发并退回「仅预览」，不要对着一个废句柄每帧重试 —— 那样每帧都要等满
-/// 管道超时，且全程占着 LINK 锁，界面会被拖死。
+/// 管道超时，设备命令也会排在同一把 I/O 锁后面，界面像卡死。
 fn link_unusable(e: &str) -> bool {
     winusb::is_gone(e) || e.contains("设备未接管") || e.contains("设备句柄已释放")
 }
@@ -1071,22 +1336,46 @@ pub fn open_link(serial: Option<String>) -> Result<Option<u64>, String> {
 pub fn close_link() {
     let old = LINK.lock().unwrap().take();
     publish_link_state(false, None);
+    // 等当前 USB 操作结束（最多一次管道超时），在锁内立刻关句柄：
+    // 这样紧接着的新一轮 `CreateFileW` 不会撞上还没关掉的旧句柄。
+    if let Some(link) = old.as_ref() {
+        let mut g = link.lock().unwrap();
+        drop(g.dev.take());
+    }
     drop(old); // 出锁再析构：归还租约要走一次 HTTP
 }
 
 /// **只关指定代数**的链路：若当前链路已被更新的一轮接管（代数不同），则原样不动。
 /// 返回是否真的关了。用于管线收尾 / 临时接管收尾，避免误关别人的链路。
 pub fn close_link_if_gen(gen_id: u64) -> bool {
+    // 先克隆 Arc、放开外层锁，再读代数：绝不在持外层锁时等一次 3s 的 USB 操作。
+    let link = { LINK.lock().unwrap().as_ref().cloned() };
+    let Some(link) = link else {
+        return false;
+    };
+    if link.lock().unwrap().gen_id != gen_id {
+        return false;
+    }
     let old = {
         let mut g = LINK.lock().unwrap();
-        match g.as_ref() {
-            Some(l) if l.gen_id == gen_id => g.take(),
-            _ => None,
+        let same = g
+            .as_ref()
+            .map(|cur| Arc::ptr_eq(cur, &link))
+            .unwrap_or(false);
+        if same {
+            g.take()
+        } else {
+            None
         }
     };
     let hit = old.is_some();
     if hit {
         publish_link_state(false, None);
+        if let Some(link) = old.as_ref() {
+            // 与 `close_link` 一样：等在途 I/O 结束，锁内立刻关句柄，避免新旧句柄重叠。
+            let mut g = link.lock().unwrap();
+            drop(g.dev.take());
+        }
     }
     drop(old);
     hit
@@ -1233,7 +1522,9 @@ impl UsbLink {
 
         // 拿到锁后重新确认：若此刻已被（另一个线程）接管 → 直接复用，绝不开第二次
         // （管线线程与 device_info 并发时，这里把后到的一方变成复用，消除竞态）
-        if let Some(cur) = LINK.lock().unwrap().as_ref() {
+        let existing = { LINK.lock().unwrap().as_ref().cloned() };
+        if let Some(cur) = existing {
+            let cur = cur.lock().unwrap();
             if cur.serial.eq_ignore_ascii_case(target.trim()) {
                 crate::logging::info("设备已接管，复用现有句柄（跳过重复打开）");
                 return Ok(None); // 复用 → 调用方不要关
@@ -1252,12 +1543,12 @@ impl UsbLink {
                         "GUI 未运行：直接接管"
                     });
                     let gen_id = LINK_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-                    *LINK.lock().unwrap() = Some(UsbLink {
+                    *LINK.lock().unwrap() = Some(Arc::new(Mutex::new(UsbLink {
                         dev: Some(dev),
                         serial: target.clone(),
                         lease: None,
                         gen_id,
-                    });
+                    })));
                     publish_link_state(true, Some(target));
                     return Ok(Some(gen_id));
                 }
@@ -1346,12 +1637,12 @@ impl UsbLink {
                 start_keepalive(id.clone(), target.clone());
             }
             let gen_id = LINK_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-            *LINK.lock().unwrap() = Some(UsbLink {
+            *LINK.lock().unwrap() = Some(Arc::new(Mutex::new(UsbLink {
                 dev: Some(dev),
                 serial: target.clone(),
                 lease,
                 gen_id,
-            });
+            })));
             publish_link_state(true, Some(target));
             return Ok(Some(gen_id));
         }

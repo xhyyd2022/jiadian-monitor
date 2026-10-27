@@ -41,13 +41,13 @@
 ```powershell
 npm install
 npm run tauri dev      # 开发模式（Vite 热更新 + 原生窗口）
-npm run tauri build    # 生产构建，产物在 src-tauri/target/release/ 与 bundle/
+npm run tauri build    # 生产构建，只生成 exe（不生成安装包）
 ```
 
 构建产物：
 
 - 可执行文件：`src-tauri/target/release/jiaidian-monitor.exe`
-- 安装包：`src-tauri/target/release/bundle/`（NSIS `.exe` + WiX `.msi`）
+- 便携包：发版工作流会生成 `jiaidian-monitor-v<版本>.zip`（exe + `assets/` + 卸载脚本）；本地把 exe 与 `assets/` 放一起即可运行
 
 ### 便携运行布局
 

@@ -39,9 +39,18 @@ pub const CLI_CDP_PORT: u16 = 9335;
 /// 找 url 里含 `needle` 的 page target 的 WS URL —— app 的 WebView2 里同时有
 /// UI 页（`tauri.localhost`）和离屏面板页，得靠 URL 区分。
 pub fn page_ws_url_matching(port: u16, needle: &str) -> Result<String, String> {
+    page_ws_url_matching_timeout(port, needle, Duration::from_secs(20))
+}
+
+/// 同 [`page_ws_url_matching`]，但允许调用方指定等待上限（重连时先用短超时探测）。
+pub fn page_ws_url_matching_timeout(
+    port: u16,
+    needle: &str,
+    timeout: Duration,
+) -> Result<String, String> {
     let list = format!("http://127.0.0.1:{port}/json/list");
     let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(20) {
+    while start.elapsed() < timeout {
         if let Ok(resp) = ureq::get(&list).call() {
             if let Ok(text) = resp.into_body().read_to_string() {
                 if let Ok(v) = serde_json::from_str::<Value>(&text) {

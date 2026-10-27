@@ -625,7 +625,7 @@ async function startRender() {
         width: effSize.value.w,
         height: effSize.value.h,
       }),
-      20000,
+      30000,
       "启动渲染",
     );
     running.value = true;
@@ -686,8 +686,9 @@ const rot = ref(0);
 const followOff = ref(false);
 const ctlBusy = ref(false);
 
-/// 等管线把 USB 接管做完（`render_start` 返回 ≠ USB 已就绪，接管在后台线程做）。
-/// 管线没在跑 / 已就绪 → 立刻返回；最多等 `timeoutMs`（接管通常 <1s，留足余量）。
+/// 兜底等管线把 USB 接管做完：新版 `render_start` 返回时接管已经完成，
+/// 但后台重连 / 旧后端仍可能晚一点就绪，这里保留短轮询避免读信息时抢设备。
+/// 管线没在跑 / 已就绪 → 立刻返回；最多等 `timeoutMs`。
 async function waitLinkReady(timeoutMs = 8000): Promise<void> {
   if (!running.value) return;
   const t0 = performance.now();

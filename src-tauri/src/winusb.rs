@@ -43,7 +43,7 @@ const ERROR_OPERATION_ABORTED: u32 = 995;
 
 /// 错误串里带上这个标记 = **设备已经不在**（拔掉了 / 句柄失效）。
 /// 调用方看到它应立刻释放链路，**不要继续对这个句柄重试** —— 否则每帧都会等满管道超时
-/// （`WinUsb_ReadPipe` 设了 3s），而且 `with_link` 期间一直占着 LINK 锁 → 界面被拖死。
+/// （`WinUsb_ReadPipe` 设了 3s），且设备命令会排在同一把 I/O 锁后面，界面看起来像卡死。
 pub const GONE_MARK: &str = "[GONE]";
 
 /// 判断错误是否属于「设备已断开」。

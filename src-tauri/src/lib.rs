@@ -376,12 +376,24 @@ async fn render_start(
     width: Option<u32>,
     height: Option<u32>,
 ) -> Result<String, String> {
-    // `start` 内部有「等上一轮收尾 + 建离屏窗口 + 等 CDP 目标」的阻塞等待 → 丢阻塞线程池
-    tauri::async_runtime::spawn_blocking(move || {
+    // `start` 内部有「等上一轮收尾 + 建离屏窗口 + 等 CDP 目标 + 接管 USB」的阻塞等待
+    // → 丢阻塞线程池。USB 接管也在这里完成，所以命令返回时 `link_open` 已是最终结果，
+    // 不再是「返回 started 但 USB 还没接管」。
+    let started = tauri::async_runtime::spawn_blocking(move || {
         pipeline::start(app, html, serial, width.unwrap_or(320), height.unwrap_or(240))
     })
     .await
-    .map_err(|e| format!("启动渲染失败：{e}"))?
+    .map_err(|e| format!("启动渲染失败：{e}"))??;
+    let open = pipeline::link_open();
+    crate::logging::info(&format!(
+        "render_start 完成：{}（{started}）",
+        if open { "USB 已接管" } else { "仅预览" }
+    ));
+    Ok(if open {
+        started
+    } else {
+        format!("{started}（USB 未接管，仅预览）")
+    })
 }
 
 /// 停止管线并等设备归还。返回给界面提示。
