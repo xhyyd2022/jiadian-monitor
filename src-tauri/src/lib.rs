@@ -466,10 +466,24 @@ async fn peripherals_refresh() -> serde_json::Value {
     peripherals::json()
 }
 
-/// 外设协议库目录（给界面显示「配置在哪儿」）。
+/// 外设协议库目录的**相对标签**（如 `<程序目录>\peripherals`）。
+///
+/// 界面显示这个而不是绝对路径：程序装在哪个盘、哪个目录都不影响显示，
+/// 也就不会把某台机器的位置写死进界面或文档。
 #[tauri::command]
 fn peripherals_dir() -> Option<String> {
-    peripherals::dir().map(|p| p.to_string_lossy().to_string())
+    peripherals::dir().map(|p| peripherals::dir_label(&p))
+}
+
+/// 在资源管理器里打开协议库目录（界面上点「打开目录」）。
+///
+/// 绝对路径只在这一处交给系统文件管理器，不进界面文本。
+#[tauri::command]
+fn peripherals_open_dir() -> Result<(), String> {
+    let p = peripherals::dir().ok_or_else(|| {
+        "找不到 peripherals 目录（应在程序同级，或当前目录下的 peripherals）".to_string()
+    })?;
+    tauri_plugin_opener::open_path(p, None::<&str>).map_err(|e| e.to_string())
 }
 
 /// 无界面：跑一轮外设识别并输出 JSON（供 `--peripherals-dump`）。
@@ -754,6 +768,7 @@ pub fn run() {
             peripherals_state,
             peripherals_refresh,
             peripherals_dir,
+            peripherals_open_dir,
             hide_to_tray
         ])
         .build(tauri::generate_context!())

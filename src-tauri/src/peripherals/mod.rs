@@ -27,6 +27,9 @@ use model::{HexByte, MatchSpec, Protocol, RxSpec, Transport, TxFrame};
 // ---------------------------------------------------------------- 目录与缓存
 
 /// 协议库目录：exe 同级的 `peripherals` → 当前目录的 `peripherals` → 开发树。
+///
+/// 这里返回的是**运行时**解析出来的绝对路径，任何地方都不写死盘符或安装目录：
+/// 换台机器、换个目录跑，结果自然跟着变。
 pub fn dir() -> Option<PathBuf> {
     let mut cands: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
@@ -46,6 +49,36 @@ pub fn dir() -> Option<PathBuf> {
         );
     }
     cands.into_iter().find(|p| p.is_dir())
+}
+
+/// 相对当前进程的路径标签，形如 `<程序目录>\peripherals`。
+///
+/// 界面、日志、截图里一律用这个：不把本机的盘符和安装位置写死到任何地方，
+/// 换台机器换个目录，标签自动跟着变。要给人真正打开目录时走资源管理器
+/// （见 `lib.rs` 的 `peripherals_open_dir` 命令），而不是把绝对路径印在界面上。
+pub fn dir_label(dir: &Path) -> String {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    if let Some(base) = exe_dir {
+        if let Ok(rel) = dir.strip_prefix(&base) {
+            let rel = rel.to_string_lossy().replace('/', "\\");
+            if !rel.is_empty() {
+                return format!("<程序目录>\\{rel}");
+            }
+        }
+    }
+    dir.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "peripherals".to_string())
+}
+
+/// 当前可执行文件名（`jiaidian-monitor.exe`）。界面上的示例命令行用它，不写死。
+pub fn exe_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "jiaidian-monitor.exe".to_string())
 }
 
 /// 读盘结果的缓存。键是「index.json + brands/ 下全部文件的 mtime+大小」。
@@ -103,10 +136,11 @@ fn dir_stamp(dir: &Path) -> String {
 }
 
 fn load_dir(dir: &Path) -> Result<Loaded, String> {
+    // 报错里只写文件名、不写绝对路径 —— 这些字符串会直接出现在界面上。
     let p = dir.join("index.json");
-    let src = std::fs::read_to_string(&p).map_err(|e| format!("读不到 {}：{e}", p.display()))?;
+    let src = std::fs::read_to_string(&p).map_err(|e| format!("读不到 index.json：{e}"))?;
     let index: model::Index =
-        serde_json::from_str(&src).map_err(|e| format!("{} 解析失败：{e}", p.display()))?;
+        serde_json::from_str(&src).map_err(|e| format!("index.json 解析失败：{e}"))?;
 
     let mut brands = BTreeMap::new();
     let mut errors = Vec::new();
@@ -360,7 +394,15 @@ impl Reading {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub ok: bool,
+    /// 协议库目录的绝对路径。
+    ///
+    /// **只给程序自己用**（打开目录、排查问题），不要在界面上直接显示：
+    /// 界面用下面的 `dir_label`，免得把本机盘符写进任何呈现给人看的地方。
     pub dir: String,
+    /// 目录的相对标签，形如 `<程序目录>\peripherals`。界面显示这个。
+    pub dir_label: String,
+    /// 当前可执行文件名，界面拼示例命令用。
+    pub exe_name: String,
     pub poll_ms: u64,
     pub devices: Vec<Reading>,
     pub errors: Vec<String>,
@@ -371,6 +413,8 @@ impl Snapshot {
     const EMPTY: Snapshot = Snapshot {
         ok: false,
         dir: String::new(),
+        dir_label: String::new(),
+        exe_name: String::new(),
         poll_ms: 3000,
         devices: Vec::new(),
         errors: Vec::new(),
@@ -750,6 +794,8 @@ impl Poller {
             }
         };
         snap.dir = ld.dir.to_string_lossy().to_string();
+        snap.dir_label = dir_label(&ld.dir);
+        snap.exe_name = exe_name();
         snap.poll_ms = ld.index.poll.interval_ms.max(500);
         snap.ok = true;
         snap.errors = ld.errors.clone();

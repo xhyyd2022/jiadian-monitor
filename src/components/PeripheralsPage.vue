@@ -26,7 +26,12 @@ interface Reading {
 }
 interface Snapshot {
   ok: boolean;
-  dir: string | null;
+  /// 目录的绝对路径（程序自己用，界面不显示）
+  dir: string;
+  /// 目录的相对标签，如 `<程序目录>\peripherals`，界面显示这个
+  dirLabel: string;
+  /// 当前可执行文件名，示例命令用它
+  exeName: string;
   pollMs: number;
   devices: Reading[];
   errors: string[];
@@ -36,9 +41,20 @@ interface Snapshot {
 const snap = ref<Snapshot | null>(null);
 const busy = ref(false);
 const msg = ref("");
-const dir = ref("");
+/// 目录标签（相对路径，不含本机盘符）
+const dirLabel = ref("");
+/// 可执行文件名（示例命令用）
+const exeName = ref("");
 
 const devices = computed(() => snap.value?.devices ?? []);
+
+/// 轮询间隔文案由后端给，不在前端写死秒数。
+const pollText = computed(() => {
+  const ms = snap.value?.pollMs ?? 0;
+  if (ms <= 0) return "";
+  const s = ms / 1000;
+  return `${Number.isInteger(s) ? s : s.toFixed(1)} 秒`;
+});
 
 /// 电量配色：>=50 绿、>=20 黄、其余红；未知灰。
 function levelClass(r: Reading): string {
@@ -87,13 +103,25 @@ async function refresh(force = false) {
   }
 }
 
+/// 在资源管理器里打开协议库目录（绝对路径只在这一步交给系统，不进界面文本）。
+async function openDir() {
+  try {
+    await invoke("peripherals_open_dir");
+  } catch (e) {
+    msg.value = String(e);
+  }
+}
+
 let timer = 0;
 
 onMounted(async () => {
   await refresh();
-  dir.value = (await invoke<string | null>("peripherals_dir").catch(() => null)) ?? "";
-  // 后端每秒最多轮询一台设备（默认 3 秒一轮），界面 2 秒取一次缓存足够。
-  timer = window.setInterval(() => refresh(), 2000);
+  dirLabel.value = (await invoke<string | null>("peripherals_dir").catch(() => null)) ?? "";
+  // 可执行文件名从后端拿，界面上不写死。
+  exeName.value = snap.value?.exeName ?? "";
+  // 界面按后端给的轮询间隔的一半取缓存，保证每次都能看到新读数。
+  const ms = Math.max(500, Math.floor((snap.value?.pollMs ?? 3000) / 2));
+  timer = window.setInterval(() => refresh(), ms);
 });
 
 onUnmounted(() => {
@@ -121,8 +149,8 @@ onUnmounted(() => {
         {{
           msg ||
           (devices.length
-            ? "电量每 3 秒读一次；协议来自 peripherals/brands 下的 JSON，按 index.json 里的 PID 绑定品牌。"
-            : "没有识别到已收录的外设。插上鼠标 / 键盘 / 耳机，或在内置的 peripherals/index.json 里补一条 PID。")
+            ? `电量每 ${pollText} 读一次；协议来自 peripherals/brands 下的 JSON，按 index.json 里的 PID 绑定品牌。`
+            : "没有识别到已收录的外设。插上鼠标 / 键盘 / 耳机，或在 peripherals/index.json 里补一条 PID。")
         }}
       </p>
 
@@ -138,13 +166,22 @@ onUnmounted(() => {
     </div>
 
     <div class="card">
-      <h2><Icon icon="line-md:file-import" />兼容配置</h2>
+      <h2>
+        <Icon icon="line-md:file-import" />
+        <span class="ttl">兼容配置</span>
+        <button class="mini" :disabled="!dirLabel" @click="openDir">
+          <Icon icon="line-md:folder" />打开目录
+        </button>
+      </h2>
       <p class="hint">
-        所有外设协议都是纯 JSON，改完存盘即可生效（点「刷新」立刻重读），不用重新编译。
-        目录：<code>{{ dir || "（未找到 peripherals 目录）" }}</code>
+        所有外设协议都是纯 JSON，改完存盘即可生效（点「刷新」立刻重读），不用重新编译。 目录：
+        <code>{{ dirLabel || "（未找到 peripherals 目录）" }}</code>
+        —— 相对程序所在文件夹，装在哪儿都一样。
       </p>
       <ol class="steps">
-        <li>跑 <code>jiaidian-monitor.exe --peripherals-hid</code> 看这台机器上的 HID 端点与 VID:PID。</li>
+        <li>
+          跑 <code>{{ exeName }} --peripherals-hid</code> 看这台机器上的 HID 端点与 VID:PID。
+        </li>
         <li>在 <code>index.json</code> 的 <code>devices</code> 里加一条 <code>vid</code>/<code>pid</code> → <code>brand</code>。</li>
         <li>在 <code>brands/&lt;品牌&gt;.json</code> 里写这个品牌的读法（发什么、怎么认回包、电量在第几字节）。</li>
         <li>填 <code>sample</code> 用真实回包自检：<code>--peripherals-selftest</code>。</li>
