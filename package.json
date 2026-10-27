@@ -1,7 +1,7 @@
 {
   "name": "jiaidian-monitor",
   "private": true,
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "把本机实时硬件数据通过 USB 推送到佳点（jiaidian）V1P / V2 小屏设备的桌面监控程序",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",

@@ -360,6 +360,10 @@ fn ensure_panel_webview(app: &AppHandle, url: &str, w: u32, h: u32) -> Result<()
 /// 面板只要定义了 `__setSlot` + 标准 `data-slot`（如 `cpu_load`），就自动拿到真值，
 /// **不需要面板自己写 fetch**。闸门直接用 `file://` 打开（不注入）→ 结果确定。
 ///
+/// **两条数据通道**：`/metrics`（本机硬件指标）+ `/peripherals`（外设电量），
+/// 都经同一段脚本注入到同一个 `__setSlot`，面板侧无感。外设槽名见
+/// `app/MONITOR_METRICS.md` 的「外设」一节（`mouse1_pct` / `kbd1_pct` …）。
+///
 /// **单位两档**（脚本每秒同时拉 `GET /units`，所以改设置立刻生效、不用重开面板）：
 /// - **全自动（auto）**：素材元素上写 `data-unit="MB/s"` 表示"这个槽我要 MB/s"，
 ///   脚本把 `/metrics` 的规范值换算成该单位再喂进去（不在换算表里的单位原样透传）。
@@ -373,6 +377,7 @@ fn pull_js() -> String {
     const JS: &str = r#"(function(){
 var MURL='__BASE__/metrics';
 var UURL='__BASE__/units';
+var PURL='__BASE__/peripherals';
 // 单位族：同一族内可换算（×倍数）。规范单位：容量 GB / 显存 MB、速率 KB/s、温度 ℃、功耗 W、时长 s（秒）。
 var BYTES={B:1,KB:1024,MB:1048576,GB:1073741824,TB:1099511627776};
 var RATES={'B/s':1,'KB/s':1024,'MB/s':1048576,'GB/s':1073741824,'KBps':1024,'MBps':1048576};
@@ -464,6 +469,49 @@ function apply(list,cfg){
     window.__setSlot(m.key,String(tgt?conv(m.value,m.unit,tgt):m.value));
   }
 }
+// ── 外设电量（鼠标 / 键盘 / 耳机…）────────────────────────────────────────
+// 数据来自 `GET /peripherals`（另一条通道，不是 /metrics），同样由上位机注入，
+// 面板照样不用写 fetch。槽名规则与硬件指标一致：类别 + 编号（从 1 起）+ 指标。
+//   mouse1_pct / mouse1_name / mouse1_status     键盘 kbd1_*；耳机 headset1_*；
+//   手柄 gamepad1_*；其余 peri1_*；另有 peri_count（当前认到几台）。
+// 编号在同一类别内按快照顺序（上位机已按品牌 + 型号排序），设备插拔会让编号前移。
+// 读不到电量一律喂「—」，**绝不喂 0** —— 0% 是「没电」，未知是「不知道」，不能混。
+var PCAT={Mouse:'mouse',Keyboard:'kbd',Headset:'headset',Earbuds:'headset',
+          Gamepad:'gamepad',Dongle:'dongle',Generic:'peri'};
+var PFED={};   // 上一轮喂过的外设槽 → 设备消失时清掉，避免残留旧电量
+function pset(k,v){PFED[k]=1;try{window.__setSlot(k,String(v));}catch(e){}}
+function pstatus(d){
+  if(!d.supported)return '未支持';
+  if(d.error&&!d.online)return '未连接';
+  if(d.charging===true)return '充电中';
+  if(d.charging===false)return '放电中';
+  if(!d.online)return '离线';
+  return '—';
+}
+function applyPeri(snap){
+  // 请求失败（null）时保持上一轮读数，不要把整屏外设槽刷成「—」——
+  // 外设是 3 秒一轮的慢通道，偶发一次超时不该让画面闪空。
+  if(!snap||typeof snap!=='object')return;
+  var devs=Array.isArray(snap.devices)?snap.devices:[];
+  var seen={},n={};
+  for(var i=0;i<devs.length;i++){
+    var d=devs[i],p=PCAT[d.category]||'peri';
+    n[p]=(n[p]||0)+1;
+    var b=p+n[p];
+    var has=(d.supported&&d.battery!==null&&d.battery!==undefined);
+    pset(b+'_pct',has?d.battery:'—');
+    pset(b+'_name',d.model||d.brand||'—');
+    pset(b+'_status',pstatus(d));
+    // PFED 里记的是完整槽名（`kbd1_pct` 这种），清理时也按完整槽名比对；
+    // 只记基名 `kbd1` 会让下面那圈把所有槽都判成「本轮没出现」而当场清空。
+    seen[b+'_pct']=1; seen[b+'_name']=1; seen[b+'_status']=1;
+  }
+  pset('peri_count',devs.length);
+  seen['peri_count']=1;
+  for(var k in PFED){
+    if(!seen[k]){ try{window.__setSlot(k,'—');}catch(e){} delete PFED[k]; }
+  }
+}
 function request(url){
   var controller=new AbortController();
   var timeout=setTimeout(function(){controller.abort();},4000);
@@ -478,9 +526,11 @@ var t=setInterval(function(){
   clearCpuLoads();
   (function p(){
     scan();
-    Promise.all([request(MURL),request(UURL)]).then(function(res){
+    Promise.all([request(MURL),request(UURL),request(PURL)]).then(function(res){
       if(Array.isArray(res[0]))apply(res[0],res[1]);
       else clearCpuLoads();
+      // 外设请求失败（null）时只清外设槽，不牵连硬件指标。
+      applyPeri(res[2]);
     }).catch(function(){clearCpuLoads();}).finally(function(){
       // 故障请求有超时，且上一轮结束后才调度下一轮，避免堆积与旧响应覆盖。
       setTimeout(p,1000);

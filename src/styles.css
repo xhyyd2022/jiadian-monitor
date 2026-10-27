@@ -52,6 +52,78 @@ html.theme-switching *::before,
 html.theme-switching *::after {
   transition: none !important;
 }
+/* ---------------- 原生控件归一化 ----------------
+   原则：**界面上的每一个像素都由本文件决定**，不依赖浏览器（WebView2 / Chromium）
+   的默认外观。这里只做「归零」——外观（背景/边框/圆角/配色）仍在下面各自的类里给，
+   以免写死一套样式把主题变量挡住。
+   为什么必须在 `html` 之前：后面的规则靠同权重后者胜出，归一化一经写死就没法被覆盖。 */
+/* 表单控件默认用 UA 的系统字体（Arial / 微软雅黑），不跟随 .app 的字体栈 ——
+   只继承字族，**不动 font-size**（UA 给按钮的是 13.33px，统一成 16px 会让界面整体变大）。 */
+button,
+input,
+select,
+textarea,
+option {
+  font-family: inherit;
+  /* 表单控件默认 content-box，给了 width 再配 padding 就会超出预期宽度 */
+  box-sizing: border-box;
+}
+/* 焦点环：默认由 UA 画（浅蓝细线，深色主题下几乎看不见）。统一成主题强调色。
+   `:focus-visible` 只在键盘导航时出现，鼠标点击不画环，避免点击后留一圈。 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+/* 链接：全局接管，不留 UA 默认的蓝色 + 下划线（深色主题下那种蓝几乎看不清）。
+   本程序的链接都是 `<a @click>` 无 href 的按钮式链接，所以只有 hover 才加下划线。 */
+a {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+a:hover {
+  text-decoration: underline;
+}
+/* 段落：UA 默认上下各 1em 外边距，放在卡片里会把行距撑到不一致。间距一律由容器给。 */
+p {
+  margin: 0;
+}
+/* 图片：UA 默认 inline 会在下方留基线空隙（约 3px），让整块高度算不准。 */
+img {
+  display: block;
+  max-width: 100%;
+}
+/* 标题：只做归零。字号由各场景给；字重显式写成 700（UA 的「bold」不可依赖，
+   而且 700 就是现在实际渲染出来的效果，改了反而会变细）。 */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  font-weight: 700;
+}
+/* 列表：UA 默认给 padding-left 40px + 圆点，本程序的列表都用 .card ul / .steps 自绘。 */
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+}
+/* 下拉列表项：Windows 上 Chromium 用系统白底画 option，深色主题里会突然闪一块白。
+   显式给色后由 color-scheme + 这两个属性共同决定。 */
+option {
+  background: var(--btn);
+  color: var(--fg);
+}
+/* 选中文本：UA 默认是天蓝底白字，与主题无关。只在可复制的区域（代码 / 提示）出现。 */
+::selection {
+  background: var(--accent);
+  color: #fff;
+}
 html {
   background: var(--bg);
 }
@@ -378,8 +450,10 @@ button.primary {
 button.danger {
   color: var(--danger);
 }
+/* 裸 <p class="err">（不带 .hint）也要有上间距：`p` 的 UA 外边距已在上面的归一化里清零 */
 .err {
   color: var(--danger);
+  margin-top: 6px;
 }
 .hint {
   color: var(--sub);
