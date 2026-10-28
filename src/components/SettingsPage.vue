@@ -1,8 +1,18 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { Icon } from "@iconify/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettings } from "../composables/useSettings";
+import {
+  prog,
+  pct,
+  indeterminate,
+  sizeText,
+  speedText,
+  attemptText,
+  watchProgress,
+  unwatchProgress,
+} from "../composables/useLhwsProgress";
 
 const {
   autostart,
@@ -84,13 +94,15 @@ async function refreshLhws() {
 
 async function installLhws() {
   lhwsBusy.value = true;
-  lhwsMsg.value = "正在下载并安装（会弹一次 UAC）…";
+  lhwsMsg.value = "";
+  watchProgress();
   try {
     lhws.value = await invoke<LhwsState>("lhws_install");
     lhwsMsg.value = lhws.value.running ? "" : "安装已完成，但服务还没在发布数据 —— 可点「重新启动」。";
   } catch (e) {
     lhwsMsg.value = `安装失败：${e}`;
   } finally {
+    unwatchProgress();
     lhwsBusy.value = false;
   }
 }
@@ -131,6 +143,11 @@ const openUrl = (url: string) => invoke("open_url", { url }).catch(() => {});
 
 onMounted(() => {
   refreshLhws();
+});
+
+// 切走页面时把进度轮询停掉：安装还在后台继续，但没必要在看不见的页面上每 300ms 打一次
+onUnmounted(() => {
+  unwatchProgress();
 });
 </script>
 
@@ -267,6 +284,26 @@ onMounted(() => {
         <span class="lbl">LibreHardwareService</span>
         <span class="dot" :class="stateClass(lhws)"></span>
         <span class="val">{{ lhws ? lhws.statusText : "检测中…" }}</span>
+      </div>
+      <!-- 下载 / 安装进度：只在有任务时出现。来源、第几次尝试、速度都写出来，
+           用户能判断"是在下"还是"在换源重试"。 -->
+      <div v-if="prog?.active" class="prog">
+        <div class="prog-head">
+          <span class="grow">{{ prog.message }}</span>
+          <span v-if="sizeText">{{ sizeText }}</span>
+          <span v-if="speedText">{{ speedText }}</span>
+        </div>
+        <div class="prog-track">
+          <div
+            class="prog-bar"
+            :class="{ indet: indeterminate, fail: prog.phase === 'failed' }"
+            :style="indeterminate ? undefined : { width: pct + '%' }"
+          ></div>
+        </div>
+        <div class="prog-head">
+          <span class="grow">{{ attemptText }}</span>
+          <span v-if="!indeterminate">{{ pct }}%</span>
+        </div>
       </div>
       <div class="btns" :class="{ two: !lhws?.installed }">
         <button v-if="!lhws?.installed" class="primary" @click="installLhws" :disabled="lhwsBusy">

@@ -71,6 +71,23 @@ fn main() {
         }
         return;
     }
+    // 只下载 + 校验（不装、不弹 UAC）：验证换源重试与进度上报。
+    if args.iter().any(|a| a == "--lhws-fetch") {
+        let t = std::thread::spawn(|| {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                println!("{}", jiaidian_monitor_lib::lhws_progress_json());
+            }
+        });
+        let r = jiaidian_monitor_lib::lhws_fetch_only();
+        // 进程直接退出，不用管那个打印线程
+        std::mem::forget(t);
+        match r {
+            Ok(m) => println!("OK: {m}"),
+            Err(e) => println!("ERR: {e}"),
+        }
+        return;
+    }
     if args.iter().any(|a| a == "--lhws-install") {
         match jiaidian_monitor_lib::lhws_install_now() {
             Ok(m) => println!("OK://n{m}"),

@@ -5,6 +5,16 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Icon, addCollection } from "@iconify/vue";
 import { useSettings } from "./composables/useSettings";
+import {
+  prog as lhwsProg,
+  pct as lhwsPct,
+  indeterminate as lhwsIndet,
+  sizeText as lhwsSize,
+  speedText as lhwsSpeed,
+  attemptText as lhwsAttempt,
+  watchProgress,
+  unwatchProgress,
+} from "./composables/useLhwsProgress";
 import lineMd from "./line-md-icons";
 import TitleBar from "./components/TitleBar.vue";
 import Sidebar from "./components/Sidebar.vue";
@@ -486,7 +496,8 @@ async function checkDataSource() {
 
 async function installDataSource() {
   srcBusy.value = true;
-  srcMsg.value = "正在下载并安装（会弹一次 UAC，请确认）…";
+  srcMsg.value = "";
+  watchProgress();
   try {
     srcState.value = await invoke<LhwsState>("lhws_install");
     srcMsg.value = srcState.value.running ? "" : "已安装，但服务还没在发布数据 —— 可点「重新启动」。";
@@ -498,6 +509,7 @@ async function installDataSource() {
   } catch (e) {
     srcMsg.value = `安装失败：${e}`;
   } finally {
+    unwatchProgress();
     srcBusy.value = false;
   }
 }
@@ -1123,6 +1135,24 @@ onUnmounted(() => {
           {{ srcTitle(srcState) }}
         </h3>
         <p class="hint">{{ srcTip(srcState) }}</p>
+        <div v-if="lhwsProg?.active" class="prog">
+          <div class="prog-head">
+            <span class="grow">{{ lhwsProg.message }}</span>
+            <span v-if="lhwsSize">{{ lhwsSize }}</span>
+            <span v-if="lhwsSpeed">{{ lhwsSpeed }}</span>
+          </div>
+          <div class="prog-track">
+            <div
+              class="prog-bar"
+              :class="{ indet: lhwsIndet, fail: lhwsProg.phase === 'failed' }"
+              :style="lhwsIndet ? undefined : { width: lhwsPct + '%' }"
+            ></div>
+          </div>
+          <div class="prog-head">
+            <span class="grow">{{ lhwsAttempt }}</span>
+            <span v-if="!lhwsIndet">{{ lhwsPct }}%</span>
+          </div>
+        </div>
         <p v-if="srcMsg" class="hint">{{ srcMsg }}</p>
         <p class="hint">
           当前状态：{{ srcState?.statusText }}（服务 {{ srcState?.serviceState }} · 数据 {{ srcState?.publishing ? "已发布" : "未发布" }}）

@@ -62,6 +62,12 @@ async fn lhws_uninstall() -> Result<serde_json::Value, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// 单独的进度查询：安装/下载过程中界面每 300ms 拉一次画进度条。
+#[tauri::command]
+fn lhws_progress() -> serde_json::Value {
+    lhws_install::progress()
+}
+
 /// 当前**启用了哪几路**数据源（前端据此决定要不要提示装 LibreHardwareService）。
 #[tauri::command]
 fn data_sources() -> serde_json::Value {
@@ -106,6 +112,16 @@ pub fn log_info(msg: &str) {
 /// CLI：打印 LibreHardwareService 状态（JSON）。
 pub fn lhws_state_json() -> String {
     serde_json::to_string_pretty(&lhws_install::state()).unwrap_or_default()
+}
+
+/// CLI：只下载 + 校验，不安装（不弹 UAC，用来验证下载链路）。
+pub fn lhws_fetch_only() -> Result<String, String> {
+    lhws_install::fetch_only()
+}
+
+/// CLI：当前下载 / 安装进度（JSON 一行）。
+pub fn lhws_progress_json() -> String {
+    serde_json::to_string(&lhws_install::progress()).unwrap_or_default()
 }
 
 /// CLI：一键安装 LibreHardwareService（官方源下载 + sha256 校验 + 提权安装）。
@@ -749,6 +765,7 @@ pub fn run() {
             settings_set,
             preview_subscribe,
             lhws_state,
+        lhws_progress,
             lhws_install,
             lhws_restart,
             lhws_uninstall,

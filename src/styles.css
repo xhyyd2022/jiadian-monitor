@@ -410,6 +410,63 @@ select {
 .hint.none {
   opacity: 0.5;
 }
+/* ---- 下载 / 安装进度（一键安装 LibreHardwareService）----
+   自绘，不用 <progress>（原生 progress 各浏览器外观不一致，也不好上主题色）。
+   总大小未知时没有内联 width，靠 .prog-bar.indet 的不确定态动画。 */
+.prog {
+  margin: 8px 0 4px;
+}
+.prog-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--sub);
+  margin-bottom: 4px;
+}
+.prog-head .grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prog-track {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--btn);
+  overflow: hidden;
+}
+.prog-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.3s ease-out;
+}
+.prog-bar.fail {
+  background: var(--danger);
+}
+.prog-bar.indet {
+  width: 34%;
+  animation: prog-slide 1.15s ease-in-out infinite;
+}
+@keyframes prog-slide {
+  0% {
+    left: -34%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+html.theme-switching .prog-bar,
+html.theme-switching .prog-bar.indet {
+  animation: none;
+  transition: none;
+}
 .wide {
   width: 100%;
 }
