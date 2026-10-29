@@ -86,52 +86,76 @@ const TEXT: &str = "text/plain; charset=utf-8";
 pub fn spawn() {
     thread::spawn(|| {
         // IPv4 与 IPv6 回环是两个不同的 socket（都不是通配地址），互不冲突。
-        // - IPv4 失败 → 端口被别的程序占了，只报错；
+        // - IPv4 失败 → 端口被别的程序占了，或落在系统保留段里；
         // - IPv6 失败 → 系统禁用了 IPv6 栈，降级成「只有 IPv4」，不算错误。
         let v4 = SocketAddr::from((Ipv4Addr::LOCALHOST, PORT));
         let v6 = SocketAddr::from((Ipv6Addr::LOCALHOST, PORT));
 
-        let l4 = match TcpListener::bind(v4) {
-            Ok(l) => {
-                BOUND_V4.store(true, Ordering::SeqCst);
-                Some(l)
-            }
-            Err(e) => {
-                crate::logging::warn(&format!("本机 API 绑定 {v4} 失败：{e}"));
-                None
-            }
-        };
-        let l6 = match TcpListener::bind(v6) {
-            Ok(l) => {
-                BOUND_V6.store(true, Ordering::SeqCst);
-                Some(l)
-            }
-            Err(e) => {
-                // 系统禁用 IPv6 时这是常态，且已经有 IPv4 在服务 → 属设计内的降级，记 info。
-                crate::logging::info(&format!(
-                    "本机 API 绑定 {v6} 失败（IPv6 可能被禁用，降级为仅 IPv4）：{e}"
-                ));
-                None
-            }
-        };
-        if l4.is_none() && l6.is_none() {
-            crate::logging::error("本机数据 API 未启动：回环地址全部绑定失败");
-            return;
-        }
+        // 绑定失败不立刻放弃：8766 有可能被 Hyper-V / WSL 的动态端口段临时保留
+        // （`netsh int ipv4 show excludedportrange protocol=tcp` 能查到，报 WSAEACCES=10013），
+        // 重启 winnat 或重启机器后这一段会变。每 5 秒重试一次，端口一空出来就自动恢复，
+        // 用户不用为了「面板没数据」去重启程序。
+        let mut warned = false;
+        loop {
+            let l4 = match TcpListener::bind(v4) {
+                Ok(l) => {
+                    BOUND_V4.store(true, Ordering::SeqCst);
+                    Some(l)
+                }
+                Err(e) => {
+                    if !warned {
+                        crate::logging::warn(&format!("本机 API 绑定 {v4} 失败：{e}"));
+                    }
+                    None
+                }
+            };
+            let l6 = match TcpListener::bind(v6) {
+                Ok(l) => {
+                    BOUND_V6.store(true, Ordering::SeqCst);
+                    Some(l)
+                }
+                Err(e) => {
+                    // 系统禁用 IPv6 时这是常态，且已经有 IPv4 在服务 → 属设计内的降级，记 info。
+                    if l4.is_some() {
+                        crate::logging::info(&format!(
+                            "本机 API 绑定 {v6} 失败（IPv6 可能被禁用，降级为仅 IPv4）：{e}"
+                        ));
+                    }
+                    None
+                }
+            };
 
-        crate::logging::info(&format!(
-            "本机数据 API: {}/  （127.0.0.1 / localhost / [::1] 均可访问）",
-            base_url()
-        ));
-        let mut handles = Vec::with_capacity(2);
-        if let Some(l) = l4 {
-            handles.push(thread::spawn(move || serve(l)));
-        }
-        if let Some(l) = l6 {
-            handles.push(thread::spawn(move || serve(l)));
-        }
-        for h in handles {
-            let _ = h.join();
+            if l4.is_none() && l6.is_none() {
+                if !warned {
+                    crate::logging::error(
+                        "本机数据 API 未启动：回环地址全部绑定失败。\
+                         若错误码是 10013（WSAEACCES），说明端口被系统保留段占用——\
+                         常见于装了 Hyper-V / WSL：管理员执行 `net stop winnat && net start winnat` \
+                         或重启电脑即可释放；程序每 5 秒会自动重试。",
+                    );
+                    warned = true;
+                }
+                thread::sleep(Duration::from_secs(5));
+                continue;
+            }
+            warned = false;
+
+            crate::logging::info(&format!(
+                "本机数据 API: {}/  （127.0.0.1 / localhost / [::1] 均可访问）",
+                base_url()
+            ));
+            let mut handles = Vec::with_capacity(2);
+            if let Some(l) = l4 {
+                handles.push(thread::spawn(move || serve(l)));
+            }
+            if let Some(l) = l6 {
+                handles.push(thread::spawn(move || serve(l)));
+            }
+            for h in handles {
+                let _ = h.join();
+            }
+            // 服务线程都退出了（正常情况下不会）：等一会儿再重来，别空转。
+            thread::sleep(Duration::from_secs(5));
         }
     });
 }

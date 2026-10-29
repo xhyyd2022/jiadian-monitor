@@ -70,6 +70,11 @@ fn main() {
         emit_cli("peripherals-probe.txt", &jiadian_monitor_lib::dump_peripherals_probe());
         return;
     }
+    // 设备信息诊断：拿一次 JED / PONG / STA 原文，用来区分「设备回包问题」和「界面问题」。
+    if args.iter().any(|a| a == "--device-info") {
+        emit_cli("device-info.json", &jiadian_monitor_lib::dump_device_info());
+        return;
+    }
     if args.iter().any(|a| a == "--peripherals-selftest") {
         let text = match jiadian_monitor_lib::peripherals_selftest() {
             Ok(m) => format!("OK: {m}"),

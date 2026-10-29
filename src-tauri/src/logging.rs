@@ -1,38 +1,187 @@
-//! 简易文件日志：`log/jiadian.log`，单文件上限 1 MB，超过就轮转成 `jiadian.log.1`。
+//! 同步文件日志：`log/jiadian.log`，正常记录在写入前按 1 MiB 轮转，保留一个 `.1`。
 //!
-//! 目的：面板切换卡顿 / 需要点多次这类问题，光看 UI 无从下手，落到文件里才能追溯。
-//! 同时打到 stderr（CLI 直接可见）。
-//!
-//! **为什么是 1 MB**：排查「长时间运行后断联」时，每 10s 一条统计就要 ~140 B，
-//! 跑 2 小时 ≈ 100 KB —— 原来的 100 KB 上限会在最需要证据的时刻把前半段轮转掉。
-//!
-//! 目录解析与 `assets/` 一致：先看 cwd，再从 exe 所在目录逐级向上找 `log/`。
+//! 文件状态、写入与轮转共用进程内锁；故障时暂停文件输出并冷却重试，stderr 尽力输出。
+//! 不使用无界队列、不 sleep、不把文件 I/O 失败升级为 panic。
+//! 注意：这是进程内串行化，尚未提供 GUI/CLI 之间的跨进程轮转协议。
 
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::SYSTEMTIME;
 use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 
-/// 单个日志文件上限。
 const MAX_BYTES: u64 = 1024 * 1024;
+const MAX_RECORD_BYTES: usize = 16 * 1024;
+// 正常文件预留一条有界 panic 记录的空间，避免刚好满额时丢掉首次崩溃线索。
+const NORMAL_BYTES: u64 = MAX_BYTES - MAX_RECORD_BYTES as u64;
+const RETRY_DELAY: Duration = Duration::from_secs(5);
+const TRUNCATED: &str = "…[已截断]";
 
-static FILE: Mutex<Option<File>> = Mutex::new(None);
-static PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+type Diagnostic = (&'static str, String);
 
-/// 日志输出总开关。**默认开**（保持原有行为）；关闭后 [`line`] 直接返回——
-/// 不写文件、不打 stderr、不做 flush，也就不再产生任何日志相关的 I/O 与内存开销。
+static SINK: Mutex<FileSink> = Mutex::new(FileSink::new());
 static ENABLED: AtomicBool = AtomicBool::new(true);
-
-/// 级别门槛（0 = 全部 / 1 = 警告及以上 / 2 = 仅错误）。低于门槛的行直接丢弃。
-///
-/// 只在总开关打开时才有意义：关掉日志时三个级别都不输出。
 static LEVEL: AtomicU8 = AtomicU8::new(0);
 
-/// 级别名 → 序号。未知按「全部」处理。
+/// 不缓存长度：CLI/异常路径可能在普通 logger 之外追加，失败的 write_all 也可能已写入前缀。
+/// 每次准入使用句柄的真实长度；降低 metadata 频率须与跨进程协议一起设计，不能盲目记账。
+struct FileSink {
+    path: Option<PathBuf>,
+    file: Option<File>,
+    retry_at: Option<Instant>,
+    last_error: Option<String>,
+    dropped: u64,
+    max_bytes: u64,
+}
+
+impl FileSink {
+    const fn new() -> Self {
+        Self {
+            path: None,
+            file: None,
+            retry_at: None,
+            last_error: None,
+            dropped: 0,
+            max_bytes: NORMAL_BYTES,
+        }
+    }
+
+    fn close(&mut self) {
+        self.file = None;
+        self.retry_at = None;
+    }
+
+    fn ensure_open(&mut self) -> Result<(), String> {
+        if self.file.is_some() {
+            return Ok(());
+        }
+        let path = self.path.get_or_insert_with(|| {
+            dir()
+                .unwrap_or_else(|| PathBuf::from("log"))
+                .join("jiadian.log")
+        });
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("创建日志目录 {} 失败：{e}", parent.display()))?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&*path)
+            .map_err(|e| format!("打开日志 {} 失败：{e}", path.display()))?;
+        // 获取长度失败不能当成空文件；不发布缺少容量信息的句柄。
+        file.metadata()
+            .map_err(|e| format!("读取日志长度 {} 失败：{e}", path.display()))?;
+        self.file = Some(file);
+        Ok(())
+    }
+
+    fn append(&mut self, text: &str) -> Result<(), String> {
+        let len = text.len() as u64;
+        if len > self.max_bytes {
+            return Err(format!("日志记录过大（{len} > {}）", self.max_bytes));
+        }
+        self.ensure_open()?;
+        let file = self.file.as_mut().ok_or("日志句柄未就绪")?;
+        let size = file
+            .metadata()
+            .map_err(|e| format!("读取日志长度失败：{e}"))?
+            .len();
+        let rotated = size.saturating_add(len) > self.max_bytes;
+        if rotated {
+            // 检查、关闭、rename、重开与后面的写入始终处于同一个 SINK 锁中。
+            self.file = None;
+            let path = self.path.as_ref().ok_or("日志路径未就绪")?;
+            let mut backup = path.as_os_str().to_os_string();
+            backup.push(".1");
+            let backup = PathBuf::from(backup);
+            fs::rename(path, &backup).map_err(|e| {
+                format!(
+                    "轮转日志 {} -> {} 失败：{e}",
+                    path.display(),
+                    backup.display()
+                )
+            })?;
+            // rename 失败绝不能再 append 大文件；成功后重开失败也不删除归档。
+            self.ensure_open()?;
+        }
+        let file = self.file.as_mut().ok_or("日志句柄未就绪")?;
+        // 重开后再次验证，不能把外部并发写入/异常追加当成不存在。
+        if rotated
+            && file
+                .metadata()
+                .map_err(|e| format!("校验日志长度失败：{e}"))?
+                .len()
+                .saturating_add(len)
+                > self.max_bytes
+        {
+            return Err("日志在写入前已再次超过容量，暂停文件输出".into());
+        }
+        file.write_all(text.as_bytes())
+            .map_err(|e| format!("追加日志失败（可能已部分写入）：{e}"))?;
+        // std::fs::File 不带用户态缓冲；不逐行调用无实际持久化保证的 flush，更不做 fsync。
+        Ok(())
+    }
+
+    /// 返回需单独输出到 stderr 的诊断；绝不能递归调用本模块的 line/info/warn。
+    /// record=None 只准备文件，供 init 使用；这里不读取 settings。
+    fn attempt(&mut self, record: Option<&str>, now: Instant) -> Option<Diagnostic> {
+        if self.retry_at.is_some_and(|deadline| now < deadline) {
+            if record.is_some() {
+                self.dropped = self.dropped.saturating_add(1);
+            }
+            return None;
+        }
+        let result = match record {
+            Some(text) => self.append(text),
+            None => self.ensure_open(),
+        };
+        match result {
+            Ok(()) => {
+                self.retry_at = None;
+                self.last_error.take().map(|previous| {
+                    let dropped = std::mem::take(&mut self.dropped);
+                    ("INFO", format!("日志文件输出恢复，故障期间未落盘 {dropped} 条（stderr 仍尽力输出）；上次错误：{previous}"))
+                })
+            }
+            Err(error) => {
+                // write_all Err 可能已写入部分内容：关闭后冷却，不在这里整行重发制造重复。
+                self.file = None;
+                self.retry_at = Some(now + RETRY_DELAY);
+                if record.is_some() {
+                    self.dropped = self.dropped.saturating_add(1);
+                }
+                self.last_error = Some(error.clone());
+                Some((
+                    "ERROR",
+                    format!(
+                        "日志文件输出暂停，{} 秒后遇到新记录再重试：{error}",
+                        RETRY_DELAY.as_secs()
+                    ),
+                ))
+            }
+        }
+    }
+}
+
+fn lock_sink(mutex: &Mutex<FileSink>) -> MutexGuard<'_, FileSink> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            // 不信任 panic 中断的半提交句柄，重新打开并读取真实长度后才允许写。
+            guard.close();
+            guard.last_error = Some("日志状态锁曾被 panic 中断，已丢弃旧句柄".into());
+            mutex.clear_poison();
+            guard
+        }
+    }
+}
+
 fn rank(level: &str) -> u8 {
     match level {
         "WARN" => 1,
@@ -41,30 +190,32 @@ fn rank(level: &str) -> u8 {
     }
 }
 
-/// 设置级别门槛（`info` / `warn` / `error`，大小写不敏感；未知值按 `info`）。
-pub fn set_level(name: &str) {
-    let v = match name.trim().to_ascii_lowercase().as_str() {
+fn level_rank(name: &str) -> u8 {
+    match name.trim().to_ascii_lowercase().as_str() {
         "warn" | "warning" => 1,
         "error" => 2,
         _ => 0,
-    };
-    LEVEL.store(v, Ordering::Relaxed);
+    }
 }
 
-/// 当前是否允许输出日志。
+fn accepts(on: bool, threshold: u8, level: &str) -> bool {
+    on && rank(level) >= threshold
+}
+
+pub fn set_level(name: &str) {
+    LEVEL.store(level_rank(name), Ordering::Relaxed);
+}
+
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// 运行时开关日志输出（**立即生效**）。
-///
-/// 持久化不在这里：真值在 `settings.ini` 的 `[app] logging`（由 `settings::apply_patch` 写），
-/// 启动时 [`init`] 从那儿读。
+/// 禁用后等待已有文件操作退出并关闭句柄；已经开始的 stderr 输出可能仍会完成。
 pub fn set_enabled(on: bool) {
-    ENABLED.store(on, Ordering::Relaxed);
-    if !on {
-        // 关闭后释放文件句柄（下次开启时会按需重开）。
-        *FILE.lock().unwrap() = None;
+    let mut sink = lock_sink(&SINK);
+    let previous = ENABLED.swap(on, Ordering::Relaxed);
+    if !on || !previous {
+        sink.close();
     }
 }
 
@@ -82,30 +233,19 @@ pub fn dir() -> Option<PathBuf> {
     cands.into_iter().find(|p| p.is_dir())
 }
 
-/// 打开日志文件（幂等）。找不到 `log/` 就自己建一个。
+/// 启动配置读取在文件状态锁之外；内部懒重开绝不调用 init 覆盖运行时设置。
 pub fn init() {
-    // 开关与级别都来自 `settings.ini`（`[app] logging` / `[app] log_level`）。
-    let s = crate::settings::current();
-    if !s.logging {
-        ENABLED.store(false, Ordering::Relaxed);
-    }
-    set_level(&s.log_level);
-    if !enabled() {
-        return; // 关闭状态：不建目录、不建文件
-    }
-    if FILE.lock().unwrap().is_some() {
-        return;
-    }
-    let dir = dir().or_else(|| {
-        let d = PathBuf::from("log");
-        fs::create_dir_all(&d).ok().map(|_| d)
-    });
-    let Some(dir) = dir else { return };
-    let _ = fs::create_dir_all(&dir);
-    let path = dir.join("jiadian.log");
-    let f = OpenOptions::new().create(true).append(true).open(&path).ok();
-    *PATH.lock().unwrap() = Some(path);
-    *FILE.lock().unwrap() = f;
+    let settings = crate::settings::current();
+    set_enabled(settings.logging);
+    set_level(&settings.log_level);
+    let diagnostic = {
+        let mut sink = lock_sink(&SINK);
+        if !enabled() {
+            return;
+        }
+        sink.attempt(None, Instant::now())
+    };
+    emit_diagnostic(diagnostic);
 }
 
 fn timestamp() -> String {
@@ -126,90 +266,439 @@ fn timestamp() -> String {
     )
 }
 
-/// 写一行日志。开关关闭时直接返回（不格式化、不写文件、不打 stderr）。
+/// 单条记录限制 16 KiB，按 UTF-8 字符截断；转义换行以免设备文本伪造后续日志。
+fn record(level: &str, msg: &str) -> String {
+    let tag: String = level.chars().take(16).filter(|c| !c.is_control()).collect();
+    let mut text = format!(
+        "{} [{tag}] [pid={} tid={:?}] ",
+        timestamp(),
+        std::process::id(),
+        std::thread::current().id()
+    );
+    let limit = MAX_RECORD_BYTES - TRUNCATED.len() - 1;
+    let mut truncated = false;
+    for ch in msg.chars() {
+        let mut buf = [0; 4];
+        let value = match ch {
+            '\r' => "\\r",
+            '\n' => "\\n",
+            '\0' => "\\0",
+            _ => ch.encode_utf8(&mut buf),
+        };
+        if text.len() + value.len() > limit {
+            truncated = true;
+            break;
+        }
+        text.push_str(value);
+    }
+    if truncated {
+        text.push_str(TRUNCATED);
+    }
+    text.push('\n');
+    text
+}
+
+fn write_best_effort(writer: &mut impl Write, text: &str) {
+    let _ = writer.write_all(text.as_bytes());
+}
+
+fn stderr(text: &str) {
+    write_best_effort(&mut io::stderr().lock(), text);
+}
+
+fn emit_diagnostic(diagnostic: Option<Diagnostic>) {
+    if let Some((level, message)) = diagnostic {
+        if accepts(enabled(), LEVEL.load(Ordering::Relaxed), level) {
+            stderr(&record(level, &message));
+        }
+    }
+}
+
+/// 被过滤的记录不格式化、不打开文件、不轮转。调用方自行 format! 的成本不在此保证内。
 pub fn line(level: &str, msg: &str) {
-    if !enabled() {
+    if !accepts(enabled(), LEVEL.load(Ordering::Relaxed), level) {
         return;
     }
-    // 级别门槛：`warn` 档不记 info 行，`error` 档只记错误
-    if rank(level) < LEVEL.load(Ordering::Relaxed) {
-        return;
-    }
-    let text = format!("{} [{level}] {msg}\n", timestamp());
-    eprint!("{text}");
-    {
-        let mut g = FILE.lock().unwrap();
-        if g.is_none() {
-            drop(g);
-            init();
-            g = FILE.lock().unwrap();
+    let text = record(level, msg);
+    let diagnostic = {
+        let mut sink = lock_sink(&SINK);
+        // 开关与文件句柄发布处于同一个锁，disable 后不能被迟到的 init/轮转重新打开。
+        if !accepts(enabled(), LEVEL.load(Ordering::Relaxed), level) {
+            return;
         }
-        if let Some(f) = g.as_mut() {
-            let _ = f.write_all(text.as_bytes());
-            let _ = f.flush();
-        }
-    }
-    rotate_if_needed();
+        sink.attempt(Some(&text), Instant::now())
+    };
+    // stderr 故障不 panic，也不会阻止文件写入；不持文件状态锁等待 stderr。
+    stderr(&text);
+    emit_diagnostic(diagnostic);
 }
 
-/// 直接追加一行，**不碰全局锁**（panic 钩子专用）。
-///
-/// panic 有可能发生在持锁期间，此时再用 `FILE.lock()` 会死锁 —— 那正是最需要日志的时刻。
-/// 这里每次重新打开文件追加，代价可忽略（只在 panic 时走一次）。
-fn direct_line(text: &str) {
-    // 用户关掉日志时连 panic 也不落盘（否则「关了还在写」与开关语义矛盾）。
-    // panic 属于 ERROR 级，级别门槛不会拦它，只有总开关能拦。
+/// 不读取配置、不触碰普通 logger 锁、不轮转。文件已满时放弃文件，保留 stderr 诊断。
+fn emergency_append(path: &Path, text: &str, max_bytes: u64) -> io::Result<()> {
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    if file.metadata()?.len().saturating_add(text.len() as u64) > max_bytes {
+        return Err(io::Error::other("panic 日志文件已满，跳过异常追加"));
+    }
+    file.write_all(text.as_bytes())
+}
+
+fn direct_line(msg: &str) {
     if !enabled() {
         return;
     }
+    let text = record("PANIC", msg);
+    stderr(&text);
     let Some(dir) = dir() else { return };
-    if let Ok(mut f) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("jiadian.log"))
-    {
-        let _ = f.write_all(format!("{} {text}\n", timestamp()).as_bytes());
-        let _ = f.flush();
+    if let Err(error) = emergency_append(&dir.join("jiadian.log"), &text, MAX_BYTES) {
+        stderr(&record("WARN", &format!("panic 日志未落盘：{error}")));
     }
 }
 
-/// 装 panic 钩子：把 panic 写进日志文件。
-///
-/// **为什么必须装**：日志里出现过「上一次会话直接消失、没有任何退出记录」的情况 ——
-/// 不装钩子时，Rust panic 只打到 stderr，而 release 是 GUI 子系统、没有控制台，
-/// 于是整个事件在文件里零痕迹，只能靠猜。
+/// 记录普通 Rust panic，再调用原钩子；不改变 release panic=abort 或承诺恢复硬崩溃。
 pub fn install_panic_hook() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        direct_line(&format!("[PANIC] {info}"));
+        direct_line(&format!("{info}"));
         default(info);
     }));
 }
 
-fn rotate_if_needed() {
-    let Some(path) = PATH.lock().unwrap().clone() else { return };
-    let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    if size <= MAX_BYTES {
-        return;
-    }
-    *FILE.lock().unwrap() = None;
-    let bak = PathBuf::from(format!("{}.1", path.to_string_lossy()));
-    let _ = fs::rename(&path, &bak);
-    let f = OpenOptions::new().create(true).append(true).open(&path).ok();
-    *FILE.lock().unwrap() = f;
-}
-
-/// `INFO` 快捷方式。
 pub fn info(msg: &str) {
     line("INFO", msg);
 }
-
-/// `WARN` 快捷方式。
 pub fn warn(msg: &str) {
     line("WARN", msg);
 }
-
-/// `ERROR` 快捷方式。
 pub fn error(msg: &str) {
     line("ERROR", msg);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new() -> Self {
+            // 测试文件仅写入仓库自己的忽略构建目录，避免依赖宿主临时目录的授权。
+            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("logging-test-tmp");
+            fs::create_dir_all(&root).unwrap();
+            let path = root.join(format!(
+                "jiadian-log-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path)
+                .unwrap_or_else(|e| panic!("无法创建隔离测试目录 {}：{e}", path.display()));
+            Self(path)
+        }
+        fn path(&self) -> PathBuf {
+            self.0.join("test.log")
+        }
+        fn sink(&self, max_bytes: u64) -> FileSink {
+            FileSink {
+                path: Some(self.path()),
+                max_bytes,
+                ..FileSink::new()
+            }
+        }
+        fn backup(&self) -> PathBuf {
+            self.0.join("test.log.1")
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn level_and_enabled_filter_preserve_existing_semantics() {
+        for threshold in 0..=2 {
+            for level in ["INFO", "WARN", "ERROR", "custom", "warn"] {
+                assert!(!accepts(false, threshold, level));
+                assert_eq!(accepts(true, threshold, level), rank(level) >= threshold);
+            }
+        }
+        assert_eq!(level_rank(" Warning "), 1);
+        assert_eq!(level_rank("ERROR"), 2);
+        assert_eq!(level_rank("unknown"), 0);
+        assert_eq!(level_rank(""), 0);
+    }
+
+    #[test]
+    fn records_are_bounded_utf8_and_have_process_context() {
+        let text = record("ERROR", &"中文🙂\n[ERROR]\r\0".repeat(4000));
+        assert!(text.len() <= MAX_RECORD_BYTES);
+        assert!(text.ends_with(&format!("{TRUNCATED}\n")));
+        assert_eq!(text.matches('\n').count(), 1);
+        assert!(text.contains("\\n[ERROR]\\r\\0"));
+        assert!(text.contains(&format!("pid={}", std::process::id())));
+        assert!(text.contains("tid=ThreadId("));
+    }
+
+    #[test]
+    fn exact_capacity_fits_and_next_record_rotates_before_write() {
+        let dir = TempDir::new();
+        let mut sink = dir.sink(8);
+        let now = Instant::now();
+        assert!(sink.attempt(Some("1234567\n"), now).is_none());
+        assert!(!dir.backup().exists());
+        assert!(sink.attempt(Some("next\n"), now).is_none());
+        assert_eq!(fs::read_to_string(dir.backup()).unwrap(), "1234567\n");
+        assert_eq!(fs::read_to_string(dir.path()).unwrap(), "next\n");
+    }
+
+    #[test]
+    fn oversized_startup_file_rotates_and_existing_backup_is_replaced() {
+        let dir = TempDir::new();
+        fs::write(dir.path(), "old-data-already-too-long\n").unwrap();
+        fs::write(dir.backup(), "previous backup\n").unwrap();
+        let mut sink = dir.sink(8);
+        assert!(sink.attempt(Some("new\n"), Instant::now()).is_none());
+        assert_eq!(
+            fs::read_to_string(dir.backup()).unwrap(),
+            "old-data-already-too-long\n"
+        );
+        assert_eq!(fs::read_to_string(dir.path()).unwrap(), "new\n");
+    }
+
+    #[test]
+    fn rotation_failure_stops_growth_and_recovers_after_cooldown() {
+        let dir = TempDir::new();
+        fs::write(dir.path(), "1234567\n").unwrap();
+        // 用一个目录阻塞 rename 的目标，不改 ACL，不接触真实日志。
+        fs::create_dir(dir.backup()).unwrap();
+        let mut sink = dir.sink(8);
+        let now = Instant::now();
+        assert!(
+            sink.attempt(Some("next\n"), now)
+                .unwrap()
+                .1
+                .contains("轮转日志")
+        );
+        assert!(sink.file.is_none());
+        for _ in 0..1000 {
+            assert!(
+                sink.attempt(Some("next\n"), now + Duration::from_secs(1))
+                    .is_none()
+            );
+        }
+        assert_eq!(fs::metadata(dir.path()).unwrap().len(), 8);
+        fs::remove_dir(dir.backup()).unwrap();
+        let recovered = sink.attempt(Some("next\n"), now + RETRY_DELAY).unwrap();
+        assert!(recovered.1.contains("输出恢复") && recovered.1.contains("1001"));
+        assert_eq!(fs::read_to_string(dir.path()).unwrap(), "next\n");
+    }
+
+    #[test]
+    fn failed_open_is_not_retried_for_every_record() {
+        let dir = TempDir::new();
+        fs::create_dir(dir.path()).unwrap();
+        let mut sink = dir.sink(128);
+        let now = Instant::now();
+        assert!(
+            sink.attempt(Some("first\n"), now)
+                .unwrap()
+                .1
+                .contains("打开日志")
+        );
+        fs::remove_dir(dir.path()).unwrap();
+        for _ in 0..1000 {
+            assert!(
+                sink.attempt(Some("skipped\n"), now + Duration::from_secs(1))
+                    .is_none()
+            );
+        }
+        assert!(!dir.path().exists(), "冷却内不应重新打开文件");
+        assert!(
+            sink.attempt(Some("recovered\n"), now + RETRY_DELAY)
+                .unwrap()
+                .1
+                .contains("输出恢复")
+        );
+        assert_eq!(fs::read_to_string(dir.path()).unwrap(), "recovered\n");
+    }
+
+    #[test]
+    fn failed_write_drops_handle_and_reopens_without_replaying_record() {
+        let dir = TempDir::new();
+        fs::write(dir.path(), "prefix\n").unwrap();
+        let mut sink = dir.sink(128);
+        sink.file = Some(File::open(dir.path()).unwrap()); // 故意注入只读句柄，可靠地制造写入错误。
+        let now = Instant::now();
+        assert!(
+            sink.attempt(Some("failed\n"), now)
+                .unwrap()
+                .1
+                .contains("追加日志失败")
+        );
+        assert!(sink.file.is_none());
+        assert!(
+            sink.attempt(Some("success\n"), now + RETRY_DELAY)
+                .unwrap()
+                .1
+                .contains("输出恢复")
+        );
+        assert_eq!(fs::read_to_string(dir.path()).unwrap(), "prefix\nsuccess\n");
+    }
+
+    #[test]
+    fn closing_sink_preserves_path_and_allows_lazy_reopen() {
+        let dir = TempDir::new();
+        let mut sink = dir.sink(128);
+        sink.attempt(Some("before\n"), Instant::now());
+        sink.close();
+        assert!(sink.file.is_none());
+        assert_eq!(sink.path, Some(dir.path()));
+        assert!(sink.attempt(Some("after\n"), Instant::now()).is_none());
+        assert_eq!(fs::read_to_string(dir.path()).unwrap(), "before\nafter\n");
+    }
+
+    #[test]
+    fn concurrent_records_are_not_torn_or_duplicated() {
+        let dir = TempDir::new();
+        let sink = Arc::new(Mutex::new(dir.sink(MAX_BYTES)));
+        let threads: Vec<_> = (0..8)
+            .map(|thread| {
+                let sink = sink.clone();
+                std::thread::spawn(move || {
+                    for seq in 0..40 {
+                        let text = format!("线程={thread},序号={seq},中文🙂\n");
+                        assert!(
+                            lock_sink(&sink)
+                                .attempt(Some(&text), Instant::now())
+                                .is_none()
+                        );
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        drop(sink);
+        let text = fs::read_to_string(dir.path()).unwrap();
+        let lines: HashSet<_> = text.lines().collect();
+        assert_eq!(text.lines().count(), 320);
+        assert_eq!(lines.len(), 320);
+        for thread in 0..8 {
+            for seq in 0..40 {
+                assert!(lines.contains(format!("线程={thread},序号={seq},中文🙂").as_str()));
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_rotation_keeps_complete_records_within_capacity() {
+        let dir = TempDir::new();
+        let sink = Arc::new(Mutex::new(dir.sink(128)));
+        let threads: Vec<_> = (0..4)
+            .map(|thread| {
+                let sink = sink.clone();
+                std::thread::spawn(move || {
+                    for seq in 0..30 {
+                        let text = format!("record={thread}:{seq:02}\n");
+                        assert!(
+                            lock_sink(&sink)
+                                .attempt(Some(&text), Instant::now())
+                                .is_none()
+                        );
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        drop(sink);
+        for path in [dir.path(), dir.backup()] {
+            let text = fs::read_to_string(path).unwrap();
+            assert!(text.len() <= 128 && text.ends_with('\n'));
+            for line in text.lines() {
+                let fields: Vec<_> = line.strip_prefix("record=").unwrap().split(':').collect();
+                assert_eq!(fields.len(), 2);
+                assert!(fields[0].parse::<usize>().unwrap() < 4);
+                assert!(fields[1].parse::<usize>().unwrap() < 30);
+            }
+        }
+    }
+
+    #[test]
+    fn poisoned_local_logger_recovers_without_a_second_panic() {
+        let dir = TempDir::new();
+        let sink = Arc::new(Mutex::new(dir.sink(128)));
+        let other = sink.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = other.lock().unwrap();
+                panic!("测试专用：中断日志状态操作");
+            })
+            .join()
+            .is_err()
+        );
+        let mut guard = lock_sink(&sink);
+        assert!(!sink.is_poisoned());
+        assert!(
+            guard
+                .attempt(Some("recovered\n"), Instant::now())
+                .unwrap()
+                .1
+                .contains("输出恢复")
+        );
+        assert_eq!(fs::read_to_string(dir.path()).unwrap(), "recovered\n");
+    }
+
+    #[test]
+    fn stderr_io_error_does_not_panic_or_prevent_file_output() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        write_best_effort(&mut Broken, "test\n");
+        let dir = TempDir::new();
+        let mut sink = dir.sink(128);
+        assert!(
+            sink.attempt(Some("file still works\n"), Instant::now())
+                .is_none()
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path()).unwrap(),
+            "file still works\n"
+        );
+    }
+
+    #[test]
+    fn normal_capacity_reserves_one_bounded_panic_record() {
+        let dir = TempDir::new();
+        assert_eq!(FileSink::new().max_bytes, NORMAL_BYTES);
+        fs::write(dir.path(), vec![b'x'; NORMAL_BYTES as usize]).unwrap();
+        let text = record("PANIC", &"崩溃上下文🙂".repeat(MAX_RECORD_BYTES));
+        assert!(text.len() <= MAX_RECORD_BYTES);
+        emergency_append(&dir.path(), &text, MAX_BYTES).unwrap();
+        assert!(fs::metadata(dir.path()).unwrap().len() <= MAX_BYTES);
+    }
+
+    #[test]
+    fn emergency_path_does_not_take_regular_sink_lock_or_rotate() {
+        let dir = TempDir::new();
+        let sink = Mutex::new(dir.sink(8));
+        let _held = sink.lock().unwrap();
+        emergency_append(&dir.path(), "panic\n", 8).unwrap();
+        assert!(emergency_append(&dir.path(), "again\n", 8).is_err());
+        assert_eq!(fs::read_to_string(dir.path()).unwrap(), "panic\n");
+        assert!(!dir.backup().exists());
+    }
 }

@@ -58,6 +58,25 @@ fn is_gone_code(err: u32) -> bool {
     matches!(err, 2 | 3 | 31 | 1167 | 1168)
 }
 
+/// WinUSB 的 0ms 表示禁用超时，不允许把它作为容错配置使用。
+fn validate_timeout(ms: u32) -> Result<(), String> {
+    if ms == 0 {
+        return Err("USB 管道超时必须大于 0ms（0 会禁用超时）".into());
+    }
+    Ok(())
+}
+
+fn transfer_len(len: usize) -> Result<u32, String> {
+    u32::try_from(len).map_err(|_| format!("USB 传输长度超过 u32 上限：{len}"))
+}
+
+fn complete_write(expected: usize, sent: usize) -> Result<usize, String> {
+    if sent != expected {
+        return Err(format!("期望 {expected} 字节，实际写入 {sent} 字节"));
+    }
+    Ok(sent)
+}
+
 fn to_wide(s: &str) -> Vec<u16> {
     std::ffi::OsStr::new(s)
         .encode_wide()
@@ -149,6 +168,7 @@ pub struct Device {
 
 impl Device {
     pub fn open(path: &str, timeout_ms: u32) -> Result<Device, String> {
+        validate_timeout(timeout_ms)?;
         unsafe {
             let wpath = to_wide(path);
             let file = CreateFileW(
@@ -189,9 +209,10 @@ impl Device {
                 serial: None,
             };
             dev.query_pipes()?;
+            // 超时策略失败就拒绝使用句柄；不能把可能无限等待的管道发布给调用方。
+            dev.set_timeout(dev.pipe_out, timeout_ms)?;
+            dev.set_timeout(dev.pipe_in, timeout_ms)?;
             dev.serial = dev.read_serial();
-            dev.set_timeout(dev.pipe_out, timeout_ms);
-            dev.set_timeout(dev.pipe_in, timeout_ms);
             Ok(dev)
         }
     }
@@ -234,17 +255,25 @@ impl Device {
         Ok(())
     }
 
-    fn set_timeout(&mut self, pipe: u8, ms: u32) {
-        let val = ms;
-        unsafe {
+    fn set_timeout(&mut self, pipe: u8, ms: u32) -> Result<(), String> {
+        validate_timeout(ms)?;
+        let ok = unsafe {
             WinUsb_SetPipePolicy(
                 self.handle,
                 pipe,
                 PIPE_TRANSFER_TIMEOUT,
-                4,
-                &val as *const u32 as *const c_void,
-            );
+                std::mem::size_of_val(&ms) as u32,
+                &ms as *const u32 as *const c_void,
+            )
+        };
+        if ok == 0 {
+            let err = unsafe { GetLastError() };
+            let gone = if is_gone_code(err) { GONE_MARK } else { "" };
+            return Err(format!(
+                "{gone}WinUsb_SetPipePolicy 失败（pipe=0x{pipe:02X}, timeout_ms={ms}, WinError {err}），拒绝使用无超时保障的设备"
+            ));
         }
+        Ok(())
     }
 
     unsafe fn read_serial(&self) -> Option<String> {
@@ -279,13 +308,14 @@ impl Device {
 
     /// 写一帧到 Bulk OUT。
     pub fn write(&self, data: &[u8]) -> Result<usize, String> {
+        let len = transfer_len(data.len())?;
         let mut sent: u32 = 0;
         let ok = unsafe {
             WinUsb_WritePipe(
                 self.handle,
                 self.pipe_out,
                 data.as_ptr(),
-                data.len() as u32,
+                len,
                 &mut sent,
                 std::ptr::null_mut(),
             )
@@ -297,11 +327,13 @@ impl Device {
             }
             return Err(format!("WinUsb_WritePipe 失败：{err}"));
         }
-        Ok(sent as usize)
+        complete_write(data.len(), sent as usize)
+            .map_err(|e| format!("WinUsb_WritePipe 短写（pipe=0x{:02X}）：{e}", self.pipe_out))
     }
 
     /// 读回执；超时返回 `Ok(None)`。
     pub fn read(&self, maxlen: usize) -> Result<Option<Vec<u8>>, String> {
+        let len = transfer_len(maxlen)?;
         let mut buf = vec![0u8; maxlen];
         let mut got: u32 = 0;
         let ok = unsafe {
@@ -309,7 +341,7 @@ impl Device {
                 self.handle,
                 self.pipe_in,
                 buf.as_mut_ptr(),
-                maxlen as u32,
+                len,
                 &mut got,
                 std::ptr::null_mut(),
             )
@@ -393,4 +425,35 @@ pub fn find_first() -> Result<Device, String> {
         }
     }
     Err(format!("未找到可用的 WinUSB 设备（{last}）"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{complete_write, transfer_len, validate_timeout};
+
+    #[test]
+    fn zero_timeout_is_rejected() {
+        assert!(validate_timeout(0).is_err());
+        assert!(validate_timeout(1).is_ok());
+        assert!(validate_timeout(3000).is_ok());
+    }
+
+    #[test]
+    fn short_writes_are_not_successful_frames() {
+        assert_eq!(complete_write(128, 128).unwrap(), 128);
+        assert!(complete_write(128, 0).is_err());
+        let error = complete_write(128, 64).unwrap_err();
+        assert!(error.contains("128"));
+        assert!(error.contains("64"));
+        assert!(complete_write(64, 128).is_err());
+    }
+
+    #[test]
+    fn transfer_lengths_do_not_truncate() {
+        assert_eq!(transfer_len(0).unwrap(), 0);
+        assert_eq!(transfer_len(u32::MAX as usize).unwrap(), u32::MAX);
+        if let Some(oversized) = (u32::MAX as usize).checked_add(1) {
+            assert!(transfer_len(oversized).is_err());
+        }
+    }
 }

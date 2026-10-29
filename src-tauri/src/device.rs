@@ -19,6 +19,11 @@ fn with_device<T>(
     f: impl FnOnce(&winusb::Device) -> Result<T, String>,
 ) -> Result<T, String> {
     let running = pipeline::link_open();
+    // 进入时先捕获**此刻**的链路代数：命令失败要释放链路时只能关这一代，
+    // 绝不能无条件 `close_link()` —— 否则期间若新一轮管线已接管，会把新链路一起关掉。
+    let running_gen = if running { pipeline::link_generation() } else { None };
+    // 未接管时自己新开的链路代数（只有真新开才有值）。
+    let mut opened_gen: Option<u64> = None;
     if running {
         // 多设备：正在接管 A 时对 B 发命令会发错设备 → 直接拒绝，让调用方先停止
         let want = serial.as_deref().map(str::trim).filter(|s| !s.is_empty());
@@ -46,6 +51,7 @@ fn with_device<T>(
         // 复用了同一句柄，关掉会把正在下发的管线链路一起关死。且按**代数**关，避免误关新一轮链路。
         match pipeline::open_link(serial) {
             Ok(opened) => {
+                opened_gen = opened;
                 let r = pipeline::with_link(|l| f(l.dev()?));
                 if let Some(gen_id) = opened {
                     pipeline::close_link_if_gen(gen_id);
@@ -60,7 +66,10 @@ fn with_device<T>(
         // 而且设备命令会排在同一把 I/O 锁后面 → 界面看起来像卡死。直接释放，让下次操作快速失败。
         if winusb::is_gone(e) {
             logging::warn(&format!("设备已断开，释放链路：{e}"));
-            pipeline::close_link();
+            // 只关自己捕获到的那一代：期间可能有新一轮管线接管，不能误关。
+            if let Some(gen_id) = running_gen.or(opened_gen) {
+                pipeline::close_link_if_gen(gen_id);
+            }
         }
     }
     if running {
@@ -69,35 +78,62 @@ fn with_device<T>(
     r
 }
 
-/// 发一条设备命令并读回 ACK 文本。
-fn cmd(dev: &winusb::Device, frame: &[u8]) -> Result<String, String> {
+/// 发命令并**按前缀认领回包**，中间收到不认识的行就丢掉继续读。
+///
+/// 为什么不能像 `cmd()` 那样“发完读下一帧”：设备在上一轮被强杀/崩溃后会残留一条状态行
+/// （典型是 `LIVE,exit`），之后每一次读到的都是**上一条命令**的回包 —— 实测日志：
+/// `JED=LIVE,exit` / `PONG=JED,684019,…` / `STA=PONG,4490`，界面就显示成
+/// 「型号 UNKNOWN、分辨率 null、Flash 255」。整条队列错位一次就永远错位，只能靠认前缀复位。
+fn cmd_matching(dev: &winusb::Device, frame: &[u8], prefix: &str) -> Result<String, String> {
     dev.write(frame)?;
-    let ack = dev.read(256)?;
-    Ok(ack
-        .map(|b| String::from_utf8_lossy(&b).trim().to_string())
-        .unwrap_or_default())
+    for _ in 0..4 {
+        let Some(bytes) = dev.read(256)? else {
+            return Err(format!("等待 {prefix} 回包超时"));
+        };
+        let s = String::from_utf8_lossy(&bytes).trim().to_string();
+        if s.starts_with(prefix) {
+            return Ok(s);
+        }
+        // 残留帧：记一笔再继续读，别让它污染后面的命令
+        logging::warn(&format!("丢弃非预期回包（在等 {prefix}）：{s}"));
+    }
+    Err(format!("连续收到非预期回包，未拿到 {prefix}"))
+}
+
+/// STA 必须按位置解析；filter_map 会把坏字段删除并让后面的旋转/息屏值向前错位。
+fn parse_display_state(ack: &str) -> Result<[i64; 4], String> {
+    let payload = ack.strip_prefix("STA,").ok_or_else(|| format!("状态查询返回异常：{ack}"))?;
+    let fields: Vec<&str> = payload.split(',').collect();
+    if fields.len() != 4 {
+        return Err(format!("STA 字段数异常（期望 4，实际 {}）：{ack}", fields.len()));
+    }
+    let mut values = [0; 4];
+    let limits = [(0, 255), (0, 1), (0, 3), (0, 1)];
+    for (i, field) in fields.iter().enumerate() {
+        let value: i64 = field.trim().parse()
+            .map_err(|_| format!("STA 第 {} 个字段不是整数：{ack}", i + 1))?;
+        let (min, max) = limits[i];
+        if !(min..=max).contains(&value) {
+            return Err(format!("STA 第 {} 个字段越界（允许 {min}..={max}）：{ack}", i + 1));
+        }
+        values[i] = value;
+    }
+    Ok(values)
 }
 
 /// 读显示状态：`STA,<亮度>,<息屏>,<旋转>,<跟随息屏>`。
 #[allow(dead_code)] // 读显示状态（STA 命令），暂未接入
 pub fn status(serial: Option<String>) -> Result<serde_json::Value, String> {
     with_device(serial, |dev| {
-        let ack = cmd(dev, &[0xA5, 0x5A, 0x08, 0xFC])?;
+        let ack = cmd_matching(dev, &[0xA5, 0x5A, 0x08, 0xFC], "STA,")?;
         logging::info(&format!("设备状态：{ack}"));
-        if !ack.starts_with("STA,") {
-            return Err(format!("状态查询返回异常：{ack}"));
-        }
-        let p: Vec<i64> = ack[4..]
-            .split(',')
-            .filter_map(|x| x.trim().parse().ok())
-            .collect();
-        let g = |i: usize| p.get(i).copied().unwrap_or(-1);
+        let state = parse_display_state(&ack)?;
         Ok(serde_json::json!({
             "ack": ack,
-            "brightness": g(0),
-            "screen_off": g(1),
-            "rotation": g(2),
-            "follow_off": g(3),
+            "brightness": state[0],
+            "screen_off": state[1],
+            "rotation": state[2],
+            "follow_off": state[3],
         }))
     })
 }
@@ -105,7 +141,7 @@ pub fn status(serial: Option<String>) -> Result<serde_json::Value, String> {
 /// 设亮度 `0..=255`（0 = 息屏）。
 pub fn set_brightness(serial: Option<String>, v: u8) -> Result<String, String> {
     with_device(serial, |dev| {
-        let ack = cmd(dev, &[0xA5, 0x5A, 0x08, 0xFF, v])?;
+        let ack = cmd_matching(dev, &[0xA5, 0x5A, 0x08, 0xFF, v], "DSP,")?;
         logging::info(&format!("设亮度 {v} → {ack}"));
         if !ack.starts_with("DSP,") {
             return Err(format!("设亮度返回异常：{ack}"));
@@ -116,22 +152,26 @@ pub fn set_brightness(serial: Option<String>, v: u8) -> Result<String, String> {
 
 /// 设旋转 `0..=3`。旋转会让设备清屏回默认背景 → 让管线下一帧整屏重发。
 pub fn set_rotation(serial: Option<String>, v: u8) -> Result<String, String> {
-    let r = with_device(serial, |dev| {
-        let ack = cmd(dev, &[0xA5, 0x5A, 0x08, 0xFE, v])?;
+    if v > 3 {
+        return Err(format!("旋转值越界：{v}（允许 0..=3）"));
+    }
+    let result = with_device(serial, |dev| {
+        let ack = cmd_matching(dev, &[0xA5, 0x5A, 0x08, 0xFE, v], "ROT,")?;
         logging::info(&format!("设旋转 {v} → {ack}"));
         if !ack.starts_with("ROT,") {
             return Err(format!("设旋转返回异常：{ack}"));
         }
         Ok(ack)
-    })?;
+    });
+    // 命令可能已执行但 ACK 丢失，失败时也要让下一帧恢复完整画面。
     pipeline::force_full_frame();
-    Ok(r)
+    result
 }
 
 /// 跟随息屏 `0|1`。
 pub fn set_follow_off(serial: Option<String>, on: bool) -> Result<String, String> {
     with_device(serial, |dev| {
-        let ack = cmd(dev, &[0xA5, 0x5A, 0x08, 0xFD, u8::from(on)])?;
+        let ack = cmd_matching(dev, &[0xA5, 0x5A, 0x08, 0xFD, u8::from(on)], "VSO,")?;
         logging::info(&format!("设跟随息屏 {on} → {ack}"));
         if !ack.starts_with("VSO,") {
             return Err(format!("设跟随息屏返回异常：{ack}"));
@@ -142,37 +182,49 @@ pub fn set_follow_off(serial: Option<String>, on: bool) -> Result<String, String
 
 /// **完整下发一次配置**：亮度 + 旋转 + 跟随息屏，一次接管里连着发（改任一项都调它）。
 ///
-/// 设备只认"当前这条命令"，单项下发在息屏/旋转之后容易出现状态对不上；
-/// 三项一起发能保证设备状态与我们界面上的三个值始终一致。
+/// 在一次接管里串行发送，避免三项命令之间被其它操作插入。
+/// 设备不支持事务：中途失败可能已部分执行，须保留已确认项数并强制整屏恢复。
 pub fn apply_config(
     serial: Option<String>,
     brightness: u8,
     rotation: u8,
     follow_off: bool,
 ) -> Result<serde_json::Value, String> {
+    if rotation > 3 {
+        return Err(format!("旋转值越界：{rotation}（允许 0..=3）"));
+    }
+    let serial_label = serial.as_deref().unwrap_or("自动选择").to_string();
     let mut acks: Vec<String> = Vec::new();
-    with_device(serial, |dev| {
-        let a = cmd(dev, &[0xA5, 0x5A, 0x08, 0xFF, brightness])?;
+    let result = with_device(serial, |dev| {
+        let a = cmd_matching(dev, &[0xA5, 0x5A, 0x08, 0xFF, brightness], "DSP,")?;
         if !a.starts_with("DSP,") {
             return Err(format!("设亮度返回异常：{a}"));
         }
         acks.push(a);
 
-        let a = cmd(dev, &[0xA5, 0x5A, 0x08, 0xFE, rotation])?;
+        let a = cmd_matching(dev, &[0xA5, 0x5A, 0x08, 0xFE, rotation], "ROT,")?;
         if !a.starts_with("ROT,") {
             return Err(format!("设旋转返回异常：{a}"));
         }
         acks.push(a);
 
-        let a = cmd(dev, &[0xA5, 0x5A, 0x08, 0xFD, u8::from(follow_off)])?;
+        let a = cmd_matching(dev, &[0xA5, 0x5A, 0x08, 0xFD, u8::from(follow_off)], "VSO,")?;
         if !a.starts_with("VSO,") {
             return Err(format!("设跟随息屏返回异常：{a}"));
         }
         acks.push(a);
         Ok(())
-    })?;
-    // 旋转会清屏 → 下一帧整屏重发
+    });
+    // 中途失败也可能已经执行旋转并清屏，不能只在三项全部成功后才重发。
     pipeline::force_full_frame();
+    result.map_err(|e| {
+        let message = format!(
+            "配置下发未完成（serial={serial_label}，已确认 {}/3 项，设备可能已部分更新）：{e}",
+            acks.len()
+        );
+        logging::warn(&message);
+        message
+    })?;
     logging::info(&format!(
         "完整下发配置：亮度 {brightness} / 旋转 {rotation} / 跟随息屏 {follow_off} → {}",
         acks.join(" | ")
@@ -200,9 +252,9 @@ fn flash_model(id: &str) -> Option<&'static str> {
 /// 实测：`JED,684019,256,32,31,218,320,240,GFM2,GFM3,LZ4P,LZ4L,HW=V2`
 pub fn info(serial: Option<String>) -> Result<serde_json::Value, String> {
     with_device(serial, |dev| {
-        let jed = cmd(dev, &[0xA5, 0x5A, 0x07])?;
-        let pong = cmd(dev, &[0xA5, 0x5A, 0x09])?;
-        let sta = cmd(dev, &[0xA5, 0x5A, 0x08, 0xFC])?;
+        let jed = cmd_matching(dev, &[0xA5, 0x5A, 0x07], "JED")?;
+        let pong = cmd_matching(dev, &[0xA5, 0x5A, 0x09], "PONG,")?;
+        let sta = cmd_matching(dev, &[0xA5, 0x5A, 0x08, 0xFC], "STA,")?;
         logging::info(&format!("设备信息：JED={jed} PONG={pong} STA={sta}"));
 
         let f: Vec<&str> = jed.split(',').collect();
@@ -221,11 +273,7 @@ pub fn info(serial: Option<String>) -> Result<serde_json::Value, String> {
         let mv = pong
             .strip_prefix("PONG,")
             .and_then(|s| s.trim().parse::<i64>().ok());
-        let sp: Vec<i64> = sta
-            .trim_start_matches("STA,")
-            .split(',')
-            .filter_map(|x| x.trim().parse().ok())
-            .collect();
+        let sp = parse_display_state(&sta)?;
 
         Ok(serde_json::json!({
             "serial": dev.serial.clone(),
@@ -248,4 +296,39 @@ pub fn info(serial: Option<String>) -> Result<serde_json::Value, String> {
             "follow_off": sp.get(3).copied(),
         }))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_config, parse_display_state, set_rotation};
+
+    #[test]
+    fn display_state_preserves_positions_and_zero_values() {
+        assert_eq!(parse_display_state("STA,200,0,2,1").unwrap(), [200, 0, 2, 1]);
+        assert_eq!(parse_display_state("STA,0,0,0,0").unwrap(), [0, 0, 0, 0]);
+        assert_eq!(parse_display_state("STA, 255 , 1 , 3 , 1 ").unwrap(), [255, 1, 3, 1]);
+    }
+
+    #[test]
+    fn malformed_display_state_does_not_shift_fields() {
+        for ack in [
+            "STA,200,broken,2,1", "STA,200,,2,1", "STA,200,0,2",
+            "STA,200,0,2,1,0", "STA,200,0,2,1,", "LIVE,exit", "STA,",
+        ] {
+            assert!(parse_display_state(ack).is_err(), "不应接受：{ack}");
+        }
+    }
+
+    #[test]
+    fn display_state_rejects_out_of_range_fields() {
+        for ack in ["STA,-1,0,0,0", "STA,256,0,0,0", "STA,1,2,0,0", "STA,1,0,4,0", "STA,1,0,0,2"] {
+            assert!(parse_display_state(ack).is_err(), "不应接受：{ack}");
+        }
+    }
+
+    #[test]
+    fn invalid_rotation_is_rejected_before_opening_any_device() {
+        assert!(set_rotation(None, 4).unwrap_err().contains("旋转值越界"));
+        assert!(apply_config(None, 200, 255, false).unwrap_err().contains("旋转值越界"));
+    }
 }

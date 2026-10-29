@@ -16,6 +16,7 @@ mod units;
 /// 离屏面板 WebView2 的 CDP 端口（`main.rs` 设环境变量时要用）。
 pub use render::PANEL_CDP_PORT;
 mod pipeline;
+mod pipeline_lifecycle;
 mod render;
 mod settings;
 pub mod single;
@@ -392,12 +393,24 @@ async fn render_start(
     serial: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
+    request_id: Option<String>,
 ) -> Result<String, String> {
-    // `start` 内部有「等上一轮收尾 + 建离屏窗口 + 等 CDP 目标 + 接管 USB」的阻塞等待
-    // → 丢阻塞线程池。USB 接管也在这里完成，所以命令返回时 `link_open` 已是最终结果，
-    // 不再是「返回 started 但 USB 还没接管」。
+    // **先注册再入队**：前端超时后可能立刻发 `render_cancel`，若等阻塞线程排到才开始
+    // 注册，取消就会落空、后台照样开一轮新管线。注册持 fail-fast 占用，忙时直接报错，
+    // 不会排队后执行一个已经过时的启动。
+    let request = pipeline::prepare_start(request_id)?;
+    // `start_prepared` 内部有「等上一轮收尾 + 建离屏窗口 + 等 CDP 目标 + 接管 USB」的
+    // 阻塞等待 → 丢阻塞线程池。USB 接管也在这里完成，所以命令返回时 `link_open` 已是
+    // 最终结果，不再是「返回 started 但 USB 还没接管」。
     let started = tauri::async_runtime::spawn_blocking(move || {
-        pipeline::start(app, html, serial, width.unwrap_or(320), height.unwrap_or(240))
+        pipeline::start_prepared(
+            app,
+            html,
+            serial,
+            width.unwrap_or(320),
+            height.unwrap_or(240),
+            request,
+        )
     })
     .await
     .map_err(|e| format!("启动渲染失败：{e}"))??;
@@ -426,14 +439,37 @@ async fn render_stop() -> Result<String, String> {
 /// **取消接管**：发 LIVE 退出帧（设备回默认素材）+ 归还控制权给官方上位机。
 #[tauri::command]
 async fn render_release() -> Result<String, String> {
-    let ok = tauri::async_runtime::spawn_blocking(|| pipeline::release(1500))
-        .await
-        .unwrap_or(false);
+    // 与 `render_start` 同理：**先占坑再入队**。否则阻塞线程排队期间用户又启动了一轮，
+    // 排到的释放会把**新一轮**的链路关掉。占坑后这次释放只针对「此刻已有的会话」。
+    let request = match pipeline::prepare_release() {
+        Ok(request) => request,
+        // 启停操作忙时，`prepare_release` 已经定向取消当前/待启动会话；这里不抛错：
+        // 抛错只会让界面显示失败，而后台其实已在收尾。字符串仍**不是**释放凭据，
+        // 前端会继续轮询 `render_state` 直到 `idle`。
+        Err(e) => return Ok(format!("已请求取消接管（仍在收尾）：{e}")),
+    };
+    let ok = tauri::async_runtime::spawn_blocking(move || {
+        pipeline::release_prepared(request, 1500)
+    })
+    .await
+    .unwrap_or(false);
     Ok(if ok {
         "已取消接管，控制权已归还".into()
     } else {
         "已取消接管（仍在收尾）".into()
     })
+}
+
+/// 管线会话状态快照：纯内存、不碰 USB/网络，前端轮询用它判断「是否真的已释放」。
+#[tauri::command]
+fn render_state() -> serde_json::Value {
+    pipeline::state()
+}
+
+/// 定向取消某个启动请求（只命中 requestId 完全相同的会话；重复调用幂等）。
+#[tauri::command]
+fn render_cancel(request_id: String) -> Result<serde_json::Value, String> {
+    pipeline::cancel_request(&request_id)
 }
 
 /// 扫描 `assets/` 下的主题（一级子文件夹），返回 主题名 + 相对页面路径（已排序）。
@@ -515,6 +551,16 @@ pub fn dump_peripherals_hid() -> String {
 /// 无界面：把「PID 命中、VID 没命中」的设备逐个候选档位试一遍（供 `--peripherals-probe`）。
 pub fn dump_peripherals_probe() -> String {
     peripherals::probe_dump()
+}
+
+/// 无界面：读一次设备信息（供 `--device-info`）。
+///
+/// 存在的意义是**排除界面的干扰**：型号显示 UNKNOWN 时，先用它确认是设备回包问题还是前端问题。
+pub fn dump_device_info() -> String {
+    match device::info(None) {
+        Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_else(|e| format!("序列化失败：{e}")),
+        Err(e) => format!("ERR: {e}"),
+    }
 }
 
 /// 无界面：回放所有品牌 JSON 里的 `sample`（供 `--peripherals-selftest`）。
@@ -786,6 +832,8 @@ pub fn run() {
             render_start,
             render_stop,
             render_release,
+            render_state,
+            render_cancel,
             list_themes,
             link_state,
             assets_dir,

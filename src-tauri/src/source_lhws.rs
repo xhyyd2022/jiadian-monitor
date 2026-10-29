@@ -12,6 +12,9 @@ use serde_json::Value;
 
 const MMF: &str = "Global\\LibreHardwareService/json/sensors/data";
 const MUTEX: &str = "Global\\LibreHardwareService/json/sensors/data/MUTEX";
+// 等待与释放都要授权：只有 SYNCHRONIZE 的句柄能取得所有权，却不能 ReleaseMutex。
+const SENSOR_MUTEX_ACCESS: u32 = windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE
+    | windows_sys::Win32::System::Threading::MUTEX_MODIFY_STATE;
 #[allow(dead_code)] // 服务名，供诊断/日志使用
 pub const NAME: &str = "LibreHardwareService";
 
@@ -75,7 +78,6 @@ unsafe fn read_data_block() -> Result<Vec<u8>, String> {
         FILE_MAP_READ, MEM_COMMIT, MEMORY_BASIC_INFORMATION, MEMORY_MAPPED_VIEW_ADDRESS,
         MapViewOfFile, OpenFileMappingW, PAGE_GUARD, PAGE_NOACCESS, UnmapViewOfFile, VirtualQuery,
     };
-    use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
     use windows_sys::Win32::System::Threading::{OpenMutexW, ReleaseMutex, WaitForSingleObject};
 
     struct Handle(HANDLE);
@@ -104,7 +106,7 @@ unsafe fn read_data_block() -> Result<Vec<u8>, String> {
         }
     }
 
-    let mtx = unsafe { OpenMutexW(SYNCHRONIZE, 0, wide(MUTEX).as_ptr()) };
+    let mtx = unsafe { OpenMutexW(SENSOR_MUTEX_ACCESS, 0, wide(MUTEX).as_ptr()) };
     if mtx.is_null() {
         let code = unsafe { GetLastError() };
         return Err(format!("互斥体打不开（OpenMutexW 错误 {code}）"));
@@ -504,6 +506,53 @@ pub fn read() -> Option<Vec<BasicMetric>> {
 #[cfg(test)]
 mod tests {
     use super::{MAX_MAPPING_BYTES, S, checked_range, data_block_range, mapping_capacity, parse, select_cpu_load};
+
+    #[test]
+    fn sensor_mutex_access_allows_release_and_next_reader() {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{
+            CreateMutexW, GetCurrentProcessId, GetCurrentThreadId, OpenMutexW, ReleaseMutex,
+            WaitForSingleObject,
+        };
+
+        struct Handle(HANDLE);
+        impl Drop for Handle {
+            fn drop(&mut self) {
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+
+        // 独立于真实服务的 Local 对象，不读取/占用 LHS 正在使用的全局互斥体。
+        let name = format!("Local\\jiadian-mutex-access-test-{}-{}", unsafe {
+            GetCurrentProcessId()
+        }, unsafe { GetCurrentThreadId() });
+        let wide = super::wide(&name);
+        let created = unsafe { CreateMutexW(std::ptr::null(), 0, wide.as_ptr()) };
+        assert!(!created.is_null());
+        let created = Handle(created);
+        let reader = unsafe { OpenMutexW(super::SENSOR_MUTEX_ACCESS, 0, wide.as_ptr()) };
+        assert!(!reader.is_null());
+        let reader = Handle(reader);
+        assert_eq!(unsafe { WaitForSingleObject(reader.0, 1000) }, WAIT_OBJECT_0);
+        let released = unsafe { ReleaseMutex(reader.0) };
+        if released == 0 {
+            // 若访问权限回归，仍用创建时的完整权限清理所有权，避免污染测试环境。
+            unsafe { ReleaseMutex(created.0) };
+        }
+        assert_ne!(released, 0, "传感器读取句柄必须能释放互斥体");
+
+        let next = std::thread::spawn(move || {
+            let handle = unsafe { OpenMutexW(super::SENSOR_MUTEX_ACCESS, 0, super::wide(&name).as_ptr()) };
+            assert!(!handle.is_null());
+            let handle = Handle(handle);
+            let status = unsafe { WaitForSingleObject(handle.0, 1000) };
+            if status == WAIT_OBJECT_0 {
+                assert_ne!(unsafe { ReleaseMutex(handle.0) }, 0);
+            }
+            status
+        }).join().unwrap();
+        assert_eq!(next, WAIT_OBJECT_0, "后续线程不能被遗留的所有权阻塞");
+    }
 
     fn sensor(hw_type: &str, sensor_type: &str, name: &str, value: f64) -> S {
         S {

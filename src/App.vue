@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Icon, addCollection } from "@iconify/vue";
 import { useSettings } from "./composables/useSettings";
+import { cleanupMissingDevice, createIntentGuard, createPreviewRenderer, createRenderSession, withTimeout } from "./renderSession";
 import {
   prog as lhwsProg,
   pct as lhwsPct,
@@ -25,16 +26,11 @@ import PeripheralsPage from "./components/PeripheralsPage.vue";
 addCollection(lineMd);
 
 const appWindow = getCurrentWindow();
-// 取消接管并等设备归还（后端会先发 LIVE 退出帧让设备回默认素材，再归还租约）。tag 只用于日志。
+// 只有后端 state=idle 才能确认归还；字符串（包括“仍在收尾”）不是释放凭据。
 async function releaseLease(tag: string) {
-  try {
-    const msg = await invoke<string>("render_release");
-    logEvent(`${tag}：${msg}`);
-    return msg;
-  } catch (e) {
-    logEvent(`${tag}失败：${e}`);
-    return "";
-  }
+  const idle = await session.stop();
+  logEvent(`${tag}：${session.view().message}`);
+  return idle;
 }
 async function onClose() {
   if (closeToTray.value) {
@@ -46,6 +42,9 @@ async function onClose() {
     }
     return;
   }
+  intent.invalidate();
+  infoRevision++;
+  previewRenderer.invalidate();
   await releaseLease("退出");
   await appWindow.destroy();
 }
@@ -250,8 +249,59 @@ const busy = ref(false);
 const previewCanvas = ref<HTMLCanvasElement | null>(null);
 /// 是否已经有画面（控制「占位提示」与画布的显隐）。
 const hasPreview = ref(false);
-/// 上一帧还在解码就丢掉新帧（下一帧很快到），避免解码堆积与乱序。
-let previewBusy = false;
+const intent = createIntentGuard();
+let appDisposed = false;
+let infoRevision = 0;
+let scanRevision = 0;
+let pollingTimer: number | undefined;
+let pollingStopped = false;
+const session = createRenderSession({
+  invoke,
+  changed: (view) => {
+    if (appDisposed) return;
+    const oldPreview = sessionView.value.previewSession;
+    sessionView.value = view;
+    running.value = view.active;
+    renderMsg.value = view.message;
+    if (oldPreview !== view.previewSession) previewRenderer.invalidate();
+  },
+});
+const sessionView = ref(session.view());
+const canChoose = computed(() => sessionView.value.canStart || (
+  sessionView.value.known && sessionView.value.state?.phase === "running" && !sessionView.value.pending
+));
+const previewRenderer = createPreviewRenderer<ImageBitmap>({
+  session: () => sessionView.value.previewSession,
+  decode: (png) => createImageBitmap(new Blob([new Uint8Array(png)], { type: "image/png" })),
+  clear: () => { hasPreview.value = false; previewLogged = false; },
+  paint: (bmp) => {
+    const cv = previewCanvas.value;
+    const ctx = cv?.getContext("2d");
+    if (!cv || !ctx) return;
+    if (cv.width !== bmp.width || cv.height !== bmp.height) {
+      cv.width = bmp.width;
+      cv.height = bmp.height;
+    }
+    ctx.drawImage(bmp, 0, 0);
+    hasPreview.value = true;
+    if (!previewLogged) { previewLogged = true; logEvent("首帧预览到达"); }
+  },
+});
+// Serial timeout-based polling: no interval backlog and at most one raw state IPC.
+async function pollSession() {
+  if (pollingStopped) return;
+  await session.refresh();
+  if (!pollingStopped) pollingTimer = window.setTimeout(pollSession, 1000);
+}
+async function runIntent(work: (token: number) => Promise<void>) {
+  if (busy.value || ctlBusy.value || appDisposed) return;
+  const token = intent.begin();
+  busy.value = true;
+  infoRevision++;
+  try { await work(token); }
+  catch (e) { if (intent.current(token)) renderMsg.value = String(e); }
+  finally { if (intent.current(token)) busy.value = false; }
+}
 /// 预览通道：订阅一次，Rust 每帧把 PNG **原始字节**直接推过来（**不走事件**）。
 /// 事件通道（`emit`）会把 payload 内联进 JS 源码再 `eval` → 每帧在渲染进程编译一段
 /// 新脚本 → 内存持续上涨；`Channel` 走 IPC 队列 + 二进制传输，没有这个问题。
@@ -395,33 +445,9 @@ function logEvent(msg: string) {
   invoke("log_event", { msg }).catch(() => {});
 }
 
-/// 画一帧到预览画布：PNG 原始字节 → Blob → `createImageBitmap` → `drawImage` → `close`。
-/// 全程只往同一块 canvas 上重画，不留任何解码缓存；`close()` 立刻释放位图。
+// JDP1 + u64 sessionId + PNG; reject stale sessions before and after bitmap decoding.
 async function drawPreview(buf: ArrayBuffer) {
-  if (previewBusy) return;
-  previewBusy = true;
-  try {
-    const bmp = await createImageBitmap(new Blob([buf], { type: "image/png" }));
-    const cv = previewCanvas.value;
-    if (cv) {
-      // 画布分辨率跟帧对齐（换 320×170 / 320×240 设备时帧大小会变）
-      if (cv.width !== bmp.width || cv.height !== bmp.height) {
-        cv.width = bmp.width;
-        cv.height = bmp.height;
-      }
-      cv.getContext("2d")?.drawImage(bmp, 0, 0);
-      hasPreview.value = true;
-      if (!previewLogged) {
-        previewLogged = true;
-        logEvent("首帧预览到达");
-      }
-    }
-    bmp.close();
-  } catch {
-    /* 坏帧忽略，等下一帧 */
-  } finally {
-    previewBusy = false;
-  }
+  await previewRenderer.draw(buf);
 }
 
 // ---------------- 数据源自检 ----------------
@@ -569,126 +595,94 @@ function blockKey(e: KeyboardEvent) {
 function blockEvt(e: Event) {
   e.preventDefault();
 }
-async function loadThemes() {
+async function loadThemes(token: number): Promise<boolean> {
   try {
-    themes.value = await invoke<Theme[]>("list_themes");
-    if (!selected.value || !themes.value.some((x) => x.name === selected.value)) {
-      selected.value = themes.value.find((x) => resolvePage(x))?.name || themes.value[0]?.name || "";
+    const next = await withTimeout(invoke<Theme[]>("list_themes"), 15000, "读取主题");
+    if (!intent.current(token)) return false;
+    themes.value = next;
+    if (!selected.value || !next.some((x) => x.name === selected.value)) {
+      selected.value = next.find((x) => resolvePage(x))?.name || next[0]?.name || "";
     }
+    return true;
   } catch (e) {
-    error.value = String(e);
+    if (intent.current(token)) renderMsg.value = `读取主题失败：${e}`;
+    return false;
   }
 }
-/** 给 invoke 加超时：后端万一卡住，前端也要能报错并复位按钮，不能一直停在「启动中…」。 */
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`${label}超时（${ms} ms 无响应）`)), ms);
-    p.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      },
-    );
+async function clearMissingDevice(sn: string, token: number) {
+  // Always request backend cleanup first, even when the missing device was only a new selection.
+  await cleanupMissingDevice({
+    stop: () => releaseLease("设备断开"),
+    current: () => intent.current(token),
+    clear: () => {
+      infoRevision++;
+      previewRenderer.invalidate();
+      info.value = null;
+      devSize.value = null;
+      selSerial.value = ""; // never silently redirect an old operation to another device
+      infoMsg.value = `未连接：设备 ${sn6(sn)} 已断开，请重新插好后刷新`;
+      renderMsg.value = `${infoMsg.value}；${session.view().message}`;
+    },
   });
 }
-
-async function startRender() {
-  // 每次都重扫素材文件夹：外部新增 / 改名 / 删除主题后，不用重启程序就能看到
-  await loadThemes();
-  // 选中的设备可能已经被拔掉（下拉里还留着旧项）：先确认它还在。
-  // 不在就重扫一次；仍然不在 → 清掉选择并明确提示，绝不把一台不存在的设备交给后端去接管
-  // （旧版本正是这样一路等到接管超时，界面看起来像死机）。
-  if (selSerial.value && !devices.value.some((d) => d.serial === selSerial.value)) {
-    await loadDevices();
-    if (selSerial.value && !devices.value.some((d) => d.serial === selSerial.value)) {
-      const gone = selSerial.value;
-      selSerial.value = "";
-      devSize.value = null;
-      renderMsg.value = `设备 ${sn6(gone)} 已断开，改为仅预览（重新插好后再选它）`;
-      logEvent(`启动前检查：${sn6(gone)} 已不在，改为仅预览`);
-    }
-  }
-  if (!selected.value) {
-    renderMsg.value = "先选一个主题";
-    logEvent("未选主题，忽略启动");
+async function startRender(token: number) {
+  if (!intent.current(token)) return;
+  // The caller owns busy before theme/scan awaits; stop invalidates the entire preparation.
+  if (!await loadThemes(token) || !intent.current(token)) return;
+  if (!await loadDevices(token) || !intent.current(token)) return;
+  const serial = selSerial.value;
+  if (serial && !devices.value.some((d) => d.serial === serial)) {
+    await clearMissingDevice(serial, token);
     return;
   }
+  if (!selected.value) { renderMsg.value = "先选一个主题"; return; }
   const page = pageOf(selected.value);
-  if (!page) {
-    renderMsg.value = `该主题没有 ${effSize.value.w}×${effSize.value.h} 的素材`;
-    logEvent(`主题「${selected.value}」缺少 ${selTag.value} 素材，未启动`);
-    return;
+  if (!page) { renderMsg.value = `该主题没有 ${effSize.value.w}×${effSize.value.h} 的素材`; return; }
+  if (!session.view().canStart) {
+    // Replacing a known running theme is supported, but unknown/starting/stopping is not takeover permission.
+    if (!session.view().known || session.view().state?.phase !== "running") {
+      renderMsg.value = "后台尚未确认释放，可继续点「停止」";
+      return;
+    }
+    if (!await releaseLease("切换主题") || !intent.current(token)) return;
   }
-  // 若外层已置 busy（如切设备流程），不要在这里提前复位，否则中间会出现可操作窗口
-  const wasBusy = busy.value;
-  busy.value = true;
-  const t0 = performance.now();
-  renderMsg.value = "启动中…";
+  if (!intent.current(token) || !session.view().canStart || serial !== selSerial.value) return;
+  const name = selected.value;
+  const tag = selTag.value;
   htmlPath.value = `assets/${page}`;
-  logEvent(`render_start 调用：${htmlPath.value}（${labelOfSerial(selSerial.value)}）`);
-  try {
-    renderMsg.value = await withTimeout(
-      invoke<string>("render_start", {
-        html: htmlPath.value,
-        serial: selSerial.value || null,
-        width: effSize.value.w,
-        height: effSize.value.h,
-      }),
-      30000,
-      "启动渲染",
-    );
-    running.value = true;
-    curTag.value = selTag.value;
-    setLastTheme(selTag.value, selected.value);
-    localStorage.setItem("jiadian.lastTheme", selected.value); // 兼容旧键
-    logEvent(`render_start 返回：${renderMsg.value}（${Math.round(performance.now() - t0)}ms）`);
-  } catch (e) {
-    renderMsg.value = String(e);
-    logEvent(`render_start 失败：${e}`);
-  } finally {
-    if (!wasBusy) busy.value = false;
-  }
+  const started = await session.start({ html: htmlPath.value, serial: serial || null,
+    width: effSize.value.w, height: effSize.value.h });
+  if (!intent.current(token) || !started) return;
+  curTag.value = tag;
+  setLastTheme(tag, name);
+  localStorage.setItem("jiadian.lastTheme", name);
+  logEvent(`render_start 已确认：${name}（${labelOfSerial(serial)}）`);
 }
 async function chooseSelected() {
-  if (!selected.value) return;
-  logEvent(`点击「确定」：${selected.value}`);
-  await startRender();
+  if (!selected.value || !canChoose.value) return;
+  await runIntent(startRender);
 }
 async function importPanel() {
-  logEvent("点击「导入素材」");
-  try {
-    const f = await open({
-      multiple: false,
+  if (!canChoose.value) return;
+  await runIntent(async (token) => {
+    const f = await open({ multiple: false,
       filters: [{ name: "HTML 面板", extensions: ["html", "htm"] }],
-      defaultPath: assetsDir.value || undefined,
-    });
-    if (typeof f !== "string" || !f) return;
-    logEvent(`导入素材选中：${f}`);
-    // 按 HTML 声明的尺寸归入 assets/<主题名>/v1p|v2/（连同同目录图片）→ 刷新下拉 → 直接下发
-    const t = await invoke<Theme>("import_panel", { src: f });
-    await loadThemes();
+      defaultPath: assetsDir.value || undefined });
+    if (!intent.current(token) || typeof f !== "string" || !f) return;
+    const t = await withTimeout(invoke<Theme>("import_panel", { src: f }), 30000, "导入素材");
+    if (!intent.current(token) || !await loadThemes(token) || !intent.current(token)) return;
     selected.value = t.name;
-    await startRender();
-  } catch (e) {
-    renderMsg.value = String(e);
-    logEvent(`导入素材失败：${e}`);
-  }
+    await startRender(token);
+  });
 }
 async function releaseTakeover() {
+  intent.invalidate();
+  infoRevision++;
+  scanRevision++;
+  busy.value = false;
+  previewRenderer.invalidate();
   logEvent("点击「停止」：取消接管");
-  renderMsg.value = "正在取消接管…";
-  const msg = await releaseLease("停止");
-  if (msg) {
-    renderMsg.value = msg;
-    running.value = false;
-    hasPreview.value = false; // 画面已还给设备，预览清空
-  } else {
-    renderMsg.value = "取消失败，详见日志";
-  }
+  await releaseLease("停止");
 }
 
 // ---------------- 设备参数 ----------------
@@ -699,188 +693,159 @@ const rot = ref(0);
 const followOff = ref(false);
 const ctlBusy = ref(false);
 
-/// 兜底等管线把 USB 接管做完：新版 `render_start` 返回时接管已经完成，
-/// 但后台重连 / 旧后端仍可能晚一点就绪，这里保留短轮询避免读信息时抢设备。
-/// 管线没在跑 / 已就绪 → 立刻返回；最多等 `timeoutMs`。
-async function waitLinkReady(timeoutMs = 8000): Promise<void> {
-  if (!running.value) return;
+// Never treat an unknown state as permission to open a USB handle.
+async function waitLinkReady(serial: string, valid: () => boolean, timeoutMs = 8000): Promise<boolean> {
   const t0 = performance.now();
-  while (performance.now() - t0 < timeoutMs) {
-    try {
-      const s = await invoke<{ open: boolean; ready: boolean }>("link_state");
-      if (s.ready) return;
-    } catch {
-      return; // 查询失败就别卡住，直接去读
-    }
-    await new Promise((r) => setTimeout(r, 120));
+  while (valid() && performance.now() - t0 < timeoutMs) {
+    const view = session.view();
+    if (view.canStart) return true;
+    if (!view.known || view.state?.serial !== serial || view.state.phase === "stopping") return false;
+    if (view.state.phase === "running" && view.state.ready) return true;
+    await session.refresh();
+    if (valid()) await new Promise((resolve) => setTimeout(resolve, 120));
   }
+  return false;
 }
-
-async function loadInfo() {
+async function loadInfo(token: number) {
+  const serial = selSerial.value;
+  const revision = ++infoRevision;
+  const valid = () => intent.current(token) && revision === infoRevision && serial === selSerial.value;
+  if (!serial || !valid()) return;
   infoMsg.value = "读取中…";
-  // 管线在跑时先等它「真正接管完 USB」再读 —— 否则会和管线并发开设备、
-  // 两次 CreateFileW 互撞（设备被占用）→ 一方失败 → 切设备卡顿/丢帧。
-  await waitLinkReady();
+  if (!await waitLinkReady(serial, valid) || !valid()) {
+    if (valid()) infoMsg.value = "后台尚未就绪或状态未知，请稍后刷新（不会尝试抢占设备）";
+    return;
+  }
   try {
-    const d = await withTimeout(
-      invoke<DeviceInfo>("device_info", { serial: selSerial.value || null }),
-      20000,
-      "读取设备信息",
-    );
+    const d = await withTimeout(invoke<DeviceInfo>("device_info", { serial }), 20000, "读取设备信息");
+    if (!valid()) return;
+    if (d.serial && d.serial !== serial) throw new Error("设备信息序列号不匹配");
     info.value = d;
     if (d.brightness !== null) bright.value = d.brightness;
     if (d.rotation !== null) rot.value = d.rotation;
     followOff.value = d.follow_off === 1;
     if (d.width && d.height) devSize.value = { w: d.width, h: d.height };
-    cacheDev(d.serial || selSerial.value, d.width, d.height, d.hw); // 记住机型，GUI 富化缺失时兜底
+    cacheDev(serial, d.width, d.height, d.hw);
     infoMsg.value = "";
-    logEvent(`设备信息：${sn6(d.serial)} · ${d.hw} 帧数=${d.frames}`);
+    logEvent(`设备信息：${sn6(serial)} · ${d.hw} 帧数=${d.frames}`);
   } catch (e) {
+    if (!valid()) return;
     info.value = null;
-    infoMsg.value = `未连接：${e}`;
-    // 读不到多半是设备被拔了：重扫一次，把下拉里已经不存在的旧项清掉
-    void loadDevices();
+    infoMsg.value = `读取失败：${e}；请刷新确认设备是否仍连接`;
   }
 }
-async function ctl(fn: () => Promise<unknown>, label: string) {
+const canConfigure = computed(() => {
+  const view = sessionView.value;
+  return !busy.value && !ctlBusy.value && !!selSerial.value && info.value?.serial === selSerial.value
+    && (view.canStart || (view.known && view.state?.phase === "running"
+      && view.state.serial === selSerial.value && view.state.ready));
+});
+// Snapshot the explicit serial and all fields before invoking: no default-device fallback after an await.
+async function applyConfig() {
+  if (!canConfigure.value) return;
+  const serial = selSerial.value;
+  const revision = infoRevision;
+  const args = { serial, brightness: bright.value, rotation: rot.value, followOff: followOff.value };
   ctlBusy.value = true;
   try {
-    await fn();
-    logEvent(`${label} 成功`);
+    await withTimeout(invoke("device_apply_config", args), 20000, "下发配置");
+    if (!appDisposed && revision === infoRevision && serial === selSerial.value) logEvent(`下发配置 ${sn6(serial)} 成功`);
   } catch (e) {
-    infoMsg.value = `${label} 失败：${e}`;
-    logEvent(`${label} 失败：${e}`);
+    if (!appDisposed && revision === infoRevision && serial === selSerial.value) infoMsg.value = `下发配置失败：${e}`;
   } finally {
     ctlBusy.value = false;
   }
 }
-/// 改任一项显示设置，都**完整下发一次**（亮度 + 旋转 + 跟随息屏），避免单项下发后状态对不上
-const applyConfig = () =>
-  ctl(
-    () =>
-      withTimeout(
-        invoke("device_apply_config", {
-          serial: selSerial.value || null,
-          brightness: bright.value,
-          rotation: rot.value,
-          followOff: followOff.value,
-        }),
-        20000,
-        "下发配置",
-      ),
-    `下发配置（亮度 ${bright.value} / 旋转 ${rot.value} / 跟随息屏 ${followOff.value ? "开" : "关"}）`,
-  );
 
 // ---------------- 设备扫描 / 切换 ----------------
 /// 扫描设备：本地 WinUSB 物理枚举 + GUI `/usb/status` 的 devices[] 富化（尺寸/机型）。
-async function loadDevices(): Promise<void> {
+async function loadDevices(token: number): Promise<boolean> {
+  const revision = ++scanRevision;
   try {
-    // 只保留真正连着的设备：本地枚举能开出 SN 的才算数，过滤掉枚举到但打不开的占位项。
-    // 另外要剔除「上位机缓存里还留着、但本地枚举不到且 GUI 也标了未连接」的旧项 ——
-    // 否则下拉里会一直挂着一台已经拔掉的设备，用户选中它就去接管一台不存在的设备。
     const raw = await withTimeout(invoke<DeviceEntry[]>("device_list"), 15000, "扫描设备");
+    if (!intent.current(token) || revision !== scanRevision) return false;
     const list = raw.filter((d) => !!d.serial && !(d.path === null && !d.connected));
-    // 扫描里带了尺寸/机型就顺手缓存，供下次 GUI 富化缺失时兜底
     for (const d of list) cacheDev(d.serial, d.width, d.height, d.variant);
     devices.value = list;
-    if (!selSerial.value || !list.some((d) => d.serial === selSerial.value)) {
-      // 优先选上次记住的设备，其次第一台（记住的设备拔了也不会卡住）
-      const pick =
-        list.find((d) => d.serial === getLastDevice()) || list.find((d) => d.serial) || list[0];
-      selSerial.value = pick?.serial || "";
+    // Pick an initial default only while confirmed idle. A missing selection must go through cleanup.
+    if (!selSerial.value && session.view().canStart) {
+      selSerial.value = (list.find((d) => d.serial === getLastDevice()) || list[0])?.serial || "";
     }
-    setLastDevice(selSerial.value); // 当前选中的设备即为「上次用的设备」
+    if (list.some((d) => d.serial === selSerial.value)) setLastDevice(selSerial.value);
     logEvent(`扫描设备：${list.length} 台（${list.map((d) => devLabel(d)).join("、") || "无"}）`);
+    return true;
   } catch (e) {
-    logEvent(`扫描设备失败：${e}`);
+    // Enumeration failure is not evidence of absence: preserve both list and selection.
+    if (intent.current(token) && revision === scanRevision) {
+      infoMsg.value = `扫描失败（保留原设备）：${e}`;
+      logEvent(infoMsg.value);
+    }
+    return false;
   }
 }
-/// 解析当前设备尺寸：优先用扫描结果；缺了才开一次设备读 JED。
-async function resolveDevSize(): Promise<void> {
+async function resolveDevSize(token: number): Promise<void> {
+  if (!intent.current(token)) return;
   const d = devices.value.find((x) => x.serial === selSerial.value);
-  if (d?.width && d?.height) {
-    devSize.value = { w: d.width, h: d.height };
-    return;
-  }
-  if (!selSerial.value) {
-    devSize.value = null;
-    return;
-  }
-  await loadInfo(); // 顺带把详情也读回来（含尺寸）
+  if (d?.width && d?.height) { devSize.value = { w: d.width, h: d.height }; return; }
+  if (!selSerial.value) { devSize.value = null; return; }
+  await loadInfo(token);
 }
-/// 手动「刷新」：重扫设备 + 重读详情。
 async function refreshDevices(): Promise<void> {
-  await loadDevices();
-  await loadInfo();
-}
-/// 下拉切换设备：同尺寸直接切换重发；换尺寸则改用该尺寸的历史素材（没有就空着等选）。
-async function onDeviceChange(): Promise<void> {
-  // 防重入：整段要「停旧设备（归还租约，可能 1s+）→ 探尺寸 → 重连 → 读信息」，
-  // 全程占着设备，期间若再切一次会撞上未归还的租约（429）。用 busy 把整段锁住。
-  if (busy.value) return;
-  busy.value = true;
-  try {
+  await runIntent(async (token) => {
+    if (!await loadDevices(token) || !intent.current(token)) return;
     const sn = selSerial.value;
-    logEvent(`切换设备：${labelOfSerial(sn)}`);
-    // 先确认这台设备还在：拔掉之后下拉里可能还留着它（来自上位机缓存）。
-    // 直接拿它去接管会白等一轮，旧版本还会把界面卡住 → 这里重扫一次，不在就明确报错并退回。
-    await loadDevices();
+    if (sn && !devices.value.some((d) => d.serial === sn)) { await clearMissingDevice(sn, token); return; }
+    await loadInfo(token);
+  });
+}
+async function onDeviceChange(): Promise<void> {
+  await runIntent(async (token) => {
+    const sn = selSerial.value;
+    if (!await loadDevices(token) || !intent.current(token)) return;
     if (sn && !devices.value.some((d) => d.serial === sn)) {
-      running.value = false;
-      hasPreview.value = false;
-      info.value = null;
-      devSize.value = null;
-      selSerial.value = devices.value[0]?.serial || "";
-      renderMsg.value = `设备 ${sn6(sn)} 已断开，请重新插好后再点「刷新」`;
-      infoMsg.value = "未连接：选中的设备已断开";
-      logEvent(`切换设备失败：${sn6(sn)} 已不在（重扫后已从列表移除）`);
+      await clearMissingDevice(sn, token);
       return;
     }
-    setLastDevice(sn); // 记住这次选择，下次启动默认用它
-    if (running.value) await releaseTakeover(); // 先停旧设备（含归还租约）
-    hasPreview.value = false;
+    if (!session.view().canStart && !await releaseLease("切换设备")) return;
+    if (!intent.current(token) || !session.view().canStart || sn !== selSerial.value) return;
+    setLastDevice(sn);
+    previewRenderer.invalidate();
     info.value = null;
     devSize.value = null;
-    await resolveDevSize();
+    await resolveDevSize(token);
+    if (!intent.current(token)) return;
     const tag = selTag.value;
     if (tag !== curTag.value) {
       const last = getLastTheme(tag);
-      const pick =
-        last && themes.value.some((x) => x.name === last && resolvePage(x))
-          ? last
-          : themes.value.find((x) => resolvePage(x))?.name || "";
-      selected.value = pick;
-      logEvent(`尺寸切换 ${curTag.value || "?"} → ${tag}，主题 → ${pick || "（无可用素材）"}`);
+      selected.value = last && themes.value.some((x) => x.name === last && resolvePage(x))
+        ? last : themes.value.find((x) => resolvePage(x))?.name || "";
     }
-    // 切到新设备一律自动连接 + 读回信息（读信息放在下发之后，复用同一句柄、不抢移交）
-    await startRender();
-    await loadInfo();
-  } finally {
-    busy.value = false;
-  }
+    await startRender(token);
+    if (intent.current(token)) await loadInfo(token);
+  });
 }
-
-// 启动：按当前设备尺寸选上次用的主题（170/240 各记一份）直接进入预览
-async function boot() {
-  await loadDevices();
-  await resolveDevSize();
+// Startup is itself one guarded intent, including theme and device discovery.
+async function boot(token: number) {
+  if (!await session.refresh() || !intent.current(token)) return;
+  if (!await loadThemes(token) || !await loadDevices(token) || !intent.current(token)) return;
+  await resolveDevSize(token);
+  if (!intent.current(token)) return;
   const tag = selTag.value;
   const saved = getLastTheme(tag) || localStorage.getItem("jiadian.lastTheme") || "";
-  let pick = "";
-  if (saved && themes.value.some((x) => x.name === saved && resolvePage(x))) pick = saved;
-  if (!pick) pick = themes.value.find((x) => resolvePage(x))?.name || "";
-  if (!pick) {
-    logEvent(`没有可用于 ${tag}（${effSize.value.w}×${effSize.value.h}）的主题`);
-    return;
-  }
+  const pick = saved && themes.value.some((x) => x.name === saved && resolvePage(x))
+    ? saved : themes.value.find((x) => resolvePage(x))?.name || "";
+  if (!pick) { logEvent(`没有可用于 ${tag} 的主题`); return; }
   selected.value = pick;
-  logEvent(`启动自动下发：${pick}（${tag}）`);
-  await startRender();
+  await startRender(token);
+  if (intent.current(token)) await loadInfo(token);
 }
 
 onMounted(async () => {
+  const initialToken = intent.begin();
+  busy.value = true;
   // 先读设置（`settings.ini`）：主题、单位、帧率档位、静默启动都在里面，后面 boot() 要用
   await loadSettings();
+  if (appDisposed) return;
   // 窗口主题不在这里设：`useSettings` 里有 watch(theme) 会跟着变（含初始化那次），
   // 这里再调一次只会多一次 IPC。
   loadAutostart();
@@ -889,13 +854,17 @@ onMounted(async () => {
   window.addEventListener("contextmenu", blockEvt, true);
   document.addEventListener("copy", blockEvt);
   document.addEventListener("cut", blockEvt);
+  if (appDisposed) return;
   refresh();
-  await loadThemes();
-  assetsDir.value = (await invoke<string | null>("assets_dir").catch(() => null)) || "";
-  await boot();
-  // 设备信息放在自动下发之后读：等管线真正接管 USB 后再复用同一句柄（waitLinkReady 内部处理，
-  // 不再用固定 1.5s 猜时长；否则会和管线并发开设备、互撞「设备被占用」）
-  await loadInfo();
+  void pollSession();
+  assetsDir.value = (await withTimeout(invoke<string | null>("assets_dir"), 3000, "素材目录").catch(() => null)) || "";
+  if (appDisposed) return;
+  if (intent.current(initialToken)) {
+    try { await boot(initialToken); }
+    catch (e) { if (intent.current(initialToken)) renderMsg.value = String(e); }
+    finally { if (intent.current(initialToken)) busy.value = false; }
+  }
+  if (appDisposed) return;
   // 数据源自检：等启动流程安定后再查，LibreHardwareService 不在跑就弹窗引导
   setTimeout(checkDataSource, 2500);
   timer = window.setInterval(refresh, 1000);
@@ -924,6 +893,14 @@ onMounted(async () => {
     });
 });
 onUnmounted(() => {
+  appDisposed = true;
+  intent.dispose();
+  session.dispose();
+  previewRenderer.dispose();
+  infoRevision++;
+  scanRevision++;
+  pollingStopped = true;
+  if (pollingTimer) clearTimeout(pollingTimer);
   metricsDisposed = true;
   refreshRevision++;
   if (timer) clearInterval(timer);
@@ -1024,19 +1001,20 @@ onUnmounted(() => {
                 max="255"
                 v-model.number="bright"
                 @change="applyConfig"
+                :disabled="!canConfigure"
               />
             </div>
             <div class="btns two">
-              <button @click="bright = 0; applyConfig()" :disabled="ctlBusy">
+              <button @click="bright = 0; applyConfig()" :disabled="!canConfigure">
                 <Icon icon="line-md:monitor-off" />息屏
               </button>
-              <button @click="bright = 255; applyConfig()" :disabled="ctlBusy">
+              <button @click="bright = 255; applyConfig()" :disabled="!canConfigure">
                 <Icon icon="line-md:sunny-filled" />最亮
               </button>
             </div>
             <div class="row">
               <Icon icon="line-md:rotate-90" /><span class="lbl">屏幕方向</span>
-              <select v-model.number="rot" @change="applyConfig">
+              <select v-model.number="rot" @change="applyConfig" :disabled="!canConfigure">
                 <option :value="0">0°</option>
                 <option :value="1">90°</option>
                 <option :value="2">180°</option>
@@ -1046,7 +1024,7 @@ onUnmounted(() => {
             <div class="row">
               <Icon icon="line-md:switch" /><span class="lbl">跟随息屏</span>
               <label class="sw">
-                <input type="checkbox" v-model="followOff" @change="applyConfig" />
+                <input type="checkbox" v-model="followOff" @change="applyConfig" :disabled="!canConfigure" />
                 <span>{{ followOff ? "开" : "关" }}</span>
               </label>
             </div>
@@ -1058,19 +1036,19 @@ onUnmounted(() => {
         <section class="col right">
           <div class="card">
             <h2><Icon icon="line-md:image" />主题切换</h2>
-            <select v-model="selected" class="wide">
+            <select v-model="selected" class="wide" :disabled="busy">
               <option v-for="t in themes" :key="t.name" :value="t.name">
                 {{ t.name }}{{ pageOf(t.name) ? "" : "（缺此尺寸）" }}
               </option>
             </select>
             <div class="btns">
-              <button class="primary" @click="chooseSelected" :disabled="busy || !selectedPage">
+              <button class="primary" @click="chooseSelected" :disabled="busy || ctlBusy || !canChoose || !selectedPage">
                 <Icon icon="line-md:confirm-circle" />确定
               </button>
-              <button class="danger" @click="releaseTakeover" :disabled="busy || !running">
+              <button class="danger" @click="releaseTakeover" :disabled="!running && !busy && !sessionView.pending">
                 <Icon icon="line-md:close-circle" />停止
               </button>
-              <button @click="importPanel" :disabled="busy">
+              <button @click="importPanel" :disabled="busy || ctlBusy || !canChoose">
                 <Icon icon="line-md:file-import" />导入素材
               </button>
             </div>

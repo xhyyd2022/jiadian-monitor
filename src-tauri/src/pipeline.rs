@@ -3,7 +3,7 @@
 //! 首帧 mode 0 立底座，之后只推脏矩形（mode 1 / mode 2 ≤6 区）。
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -13,18 +13,64 @@ use tauri::{AppHandle, Manager};
 
 use crate::{diff, handoff, live_frame, render, winusb};
 
-static CANCEL: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
-/// 管线是否在跑（退出时用来等它收尾，好把租约还回去）。
-static RUNNING: AtomicBool = AtomicBool::new(false);
+use crate::pipeline_lifecycle::{self as lifecycle, Lifecycle, SessionOwner};
 
-/// 管线线程的收尾守卫：无论从哪条路径退出（正常运行 / `?` 提前返回 / 线程内 panic 展开），
-/// 都要把 `RUNNING` 放下，避免 `stop_blocking` 白等 4s、下一轮启动误判「上一轮卡住」。
-struct RunningGuard;
-impl Drop for RunningGuard {
+static LIFECYCLE: OnceLock<Arc<Lifecycle>> = OnceLock::new();
+fn lifecycle() -> &'static Arc<Lifecycle> {
+    LIFECYCLE.get_or_init(|| Arc::new(Lifecycle::new()))
+}
+
+/// Owned, Send admission: register BEFORE enqueueing spawn_blocking.
+pub struct StartRequest(lifecycle::StartTicket);
+pub struct ReleaseRequest {
+    ticket: lifecycle::ReleaseTicket,
+    link_gen: Option<u64>,
+}
+
+pub fn prepare_start(request_id: Option<String>) -> Result<StartRequest, String> {
+    lifecycle().prepare_start(request_id).map(StartRequest)
+}
+pub fn prepare_release() -> Result<ReleaseRequest, String> {
+    let ticket = lifecycle().prepare_release()?;
+    Ok(ReleaseRequest { ticket, link_gen: current_link_gen() })
+}
+
+/// All state reads are short in-memory snapshots; no USB, network, or logging.
+pub fn state() -> Value {
+    let s = lifecycle().snapshot();
+    let (link_gen, serial) = link_metadata();
+    json!({
+        "sessionId": s.session_id,
+        "requestId": s.request_id,
+        "phase": s.phase.as_str(),
+        "active": s.active,
+        "open": link_gen.is_some(),
+        "ready": s.ready,
+        "serial": serial,
+    })
+}
+pub fn cancel_request(request_id: &str) -> Result<Value, String> {
+    let (known, stale) = lifecycle().cancel_request(request_id)?;
+    let mut snapshot = state();
+    snapshot["known"] = json!(known);
+    snapshot["stale"] = json!(stale);
+    Ok(snapshot)
+}
+
+/// This owner stays alive through synchronous startup AND worker cleanup.
+/// Retire the link (including lease finish) before making the session idle.
+struct SessionGuard {
+    owner: Option<SessionOwner>,
+    link_gen: Option<u64>,
+}
+impl Drop for SessionGuard {
     fn drop(&mut self) {
-        RUNNING.store(false, Ordering::SeqCst);
-        // 兜底：管线退出后也算「就绪」，免得前端在接管失败/提前退出时白等
-        LINK_READY.store(true, Ordering::SeqCst);
+        if let Some(owner) = self.owner.as_ref() { lifecycle().stop_session(owner.session.id); }
+        if let Some(g) = self.link_gen.take() {
+            send_exit_if_gen(g);
+            close_link_if_gen(g);
+        }
+        drop(self.owner.take());
     }
 }
 
@@ -42,11 +88,16 @@ pub fn set_preview_channel(ch: Channel<InvokeResponseBody>) {
     crate::logging::info("预览通道已建立（Channel，二进制直传）");
 }
 
-/// 把一帧 PNG 原始字节推给前端预览；没订阅 / 已断开就丢掉（不排队、不累积）。
-pub fn preview_send(png: Vec<u8>) {
+/// GUI-only framing. Session is checked again immediately before dispatch;
+/// a queued old packet is also rejected by the frontend using its session ID.
+fn preview_send(session_id: u64, png: &[u8]) {
+    if !lifecycle().accepts_preview(session_id) { return; }
+    let packet = lifecycle::preview_packet(session_id, png);
     let ch = PREVIEW_CH.lock().unwrap().clone();
     if let Some(ch) = ch {
-        let _ = ch.send(InvokeResponseBody::Raw(png));
+        if lifecycle().accepts_preview(session_id) {
+            let _ = ch.send(InvokeResponseBody::Raw(packet));
+        }
     }
 }
 /// 下一帧是否强制整屏重发（旋转/息屏后设备会回默认背景，脏区差分补不回来）。
@@ -107,62 +158,56 @@ const INTERVAL_IDLE: Duration = Duration::from_millis(300);
 /// 管线不再抓帧、也不再查 `cancel`，只能杀进程。5s 足够覆盖一次正常截图（~25ms）。
 const CDP_RECV_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// 停止当前管线（若有）。
-pub fn stop() {
-    if let Some(c) = CANCEL.lock().unwrap().take() {
-        c.store(true, Ordering::SeqCst);
-    }
-}
+/// Immediate, in-memory cancellation only. No delayed closure may call this
+/// after queueing: async commands must prepare/bind their release first.
+pub fn stop() { lifecycle().stop(); }
 
-/// 停止管线并等设备归还（同步；托盘菜单等不能 await 的地方用）。返回是否已归还。
-pub fn stop_blocking(timeout_ms: u64) -> bool {
-    let was_running = RUNNING.load(Ordering::SeqCst);
-    stop();
-    let t0 = std::time::Instant::now();
-    while RUNNING.load(Ordering::SeqCst) && t0.elapsed().as_millis() < timeout_ms as u128 {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let stopped = !RUNNING.load(Ordering::SeqCst);
-    if stopped {
-        close_link();
-    }
-    crate::logging::info(match (was_running, stopped) {
-        (false, _) => "停止：管线未在运行",
-        (true, true) => "停止：已归还设备",
-        (true, false) => "停止：超时未收尾（退出流程会再兜底）",
-    });
-    stopped
-}
-
-/// 异步版（命令用）。
+/// Preparation runs on the first poll, before the blocking task is enqueued.
 pub async fn stop_and_wait(timeout_ms: u64) -> bool {
-    tauri::async_runtime::spawn_blocking(move || stop_blocking(timeout_ms))
+    let request = match prepare_release() { Ok(r) => r, Err(_) => return false };
+    tauri::async_runtime::spawn_blocking(move || release_prepared(request, timeout_ms))
         .await
         .unwrap_or(false)
 }
 
-/// **取消接管**：暂停下发 → 发 LIVE 退出帧（设备回到它自己默认播放的素材）→ 停管线 → 归还租约。
-/// 「停止」按钮与退出流程都走这里；返回 true = 租约已归还。
+/// Does not queue behind another start/release. A busy synchronous exit path
+/// still requests cancellation now, but never closes a future session's link.
 pub fn release(timeout_ms: u64) -> bool {
-    // 已经释放过了（退出流程会多次调用：托盘/API + ExitRequested + Exit）
-    if !link_open() && !RUNNING.load(Ordering::SeqCst) {
-        return true;
+    match prepare_release() {
+        Ok(request) => release_prepared(request, timeout_ms),
+        Err(_) => { stop(); false }
     }
-    pause();
-    // 等在途那一帧发完（帧间隔 33ms），否则退出帧后面还会跟一帧画面
-    std::thread::sleep(Duration::from_millis(80));
-    match with_link(|l| {
-        let f = live_frame::frame_exit();
-        l.dev()?.write(&f)?;
+}
+
+pub fn release_prepared(request: ReleaseRequest, timeout_ms: u64) -> bool {
+    let t0 = Instant::now();
+    while !request.ticket.finished() {
+        if t0.elapsed().as_millis() >= timeout_ms as u128 {
+            // Do not detach/close a live worker's link and claim success. Its
+            // session remains stopping until the cleanup guard really finishes.
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // A non-pipeline device command may have opened the link before admission.
+    // Only release that exact captured generation, never a later replacement.
+    if let Some(g) = request.link_gen {
+        send_exit_if_gen(g);
+        close_link_if_gen(g);
+    }
+    true
+}
+
+fn send_exit_if_gen(gen_id: u64) {
+    if current_link_gen() != Some(gen_id) { return; }
+    match with_link_if_gen(gen_id, |l| {
+        l.dev()?.write(&live_frame::frame_exit())?;
         let ack = l.dev()?.read(256)?;
         Ok(live_frame::parse_ack(ack.as_deref()).0.to_string())
     }) {
         Ok(a) => crate::logging::info(&format!("已发 LIVE 退出帧（{a}），设备回默认素材")),
         Err(e) => crate::logging::warn(&format!("LIVE 退出帧未发出：{e}")),
     }
-    let ok = stop_blocking(timeout_ms);
-    resume();
-    ok
 }
 
 /// 退出时调用：发退出帧 + 归还设备（`UsbLink` 的 `Drop` 释放移交租约），最后关掉离屏面板窗口。
@@ -172,71 +217,62 @@ pub fn shutdown(app: &tauri::AppHandle) {
         let _ = w.close();
         crate::logging::info("退出：关闭离屏面板窗口");
     }
-    // 兜底：任何情况下退出都要把租约还回去
-    close_link();
+    // A timed-out worker keeps ownership of its own link until its guard ends;
+    // do not globally close a potentially newer link from this delayed path.
 }
 
-/// 启动管线：用 **app 自带的 WebView2**（一个 320×240 的离屏窗口）渲染面板。
-/// 不再另起外部 Edge —— 省掉冷启动，也少一个浏览器进程。
-pub fn start(
+/// 启动已注册的管线请求；调用方必须在排队到阻塞池之前 prepare_start。
+/// 使用 app 自带的离屏 WebView2，不另起浏览器进程。
+pub fn start_prepared(
     app: AppHandle,
     html: String,
     serial: Option<String>,
     w: u32,
     h: u32,
+    mut request: StartRequest,
 ) -> Result<String, String> {
-    let t0 = std::time::Instant::now();
-    crate::logging::info(&format!("render_start 请求：{html}"));
-    resume(); // 清掉上一轮可能残留的暂停
-    stop();
-    // 等上一轮真正收尾再启动（两个渲染任务不能抢同一个离屏窗口）
-    let mut waited = false;
-    for _ in 0..80 {
-        if !RUNNING.load(Ordering::SeqCst) {
-            break;
+    let t0 = Instant::now();
+    let session = request.0.session.clone();
+    session.check()?;
+    crate::logging::info(&format!("render_start session={} 请求：{html}", session.id));
+    // No new navigation, USB acquisition, or worker before the old owner has
+    // actually finished. Timeout leaves its stopping state visible.
+    while !request.0.previous_finished() {
+        session.check()?;
+        if t0.elapsed() >= Duration::from_secs(4) {
+            return Err("上一会话仍在停止，未启动新管线；请等待收尾后重试".into());
         }
-        waited = true;
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(20));
     }
-    if RUNNING.load(Ordering::SeqCst) {
-        // 上一轮卡住没收尾：**强制释放它的链路**，让它的下发立刻报错退出，
-        // 否则它会一直占着 `LINK`（新一轮只能复用同一句柄），收尾时还会把它关掉 → 新链路被误关。
-        crate::logging::warn("上一轮管线 4s 内未停止，强制释放其链路后继续启动");
-        close_link();
-    } else if waited {
-        crate::logging::info(&format!("已等上一轮收尾 {}ms", t0.elapsed().as_millis()));
-    }
-
+    session.check()?;
+    let owner = request.0.activate()?;
+    let mut guard = SessionGuard { owner: Some(owner), link_gen: None };
+    resume();
     let url = panel_url(&html);
     let needle = panel_file_name(&html);
+    session.check()?;
     ensure_panel_webview(&app, &url, w, h)?;
+    session.check()?;
     let ws = render::page_ws_url_matching(render::PANEL_CDP_PORT, &needle)?;
+    session.check()?;
     crate::logging::info(&format!("面板 CDP 就绪 +{}ms", t0.elapsed().as_millis()));
 
-    let cancel = Arc::new(AtomicBool::new(false));
-    *CANCEL.lock().unwrap() = Some(cancel.clone());
-    RUNNING.store(true, Ordering::SeqCst);
-    LINK_READY.store(false, Ordering::SeqCst); // 本轮 USB 还没接管，前端先别抢
-
-    // USB 接管放在管线线程**之外**同步做：
-    // `UsbLink::open` 内部是同步 USB / HTTP（含移交重试，最坏受 `OPEN_BUDGET` 约束）。
-    // 放在渲染线程里会让 `render_start` 已经返回、USB 却还没接管；放在 Tauri async
-    // 任务里则会占住 tokio worker。这里由 `render_start` 的阻塞池调用，返回前就能
-    // 确定是「已接管」还是「仅预览」。
-    let link_gen = match UsbLink::open(serial, w, h) {
-        Ok(g) => {
-            crate::logging::info(&format!("USB 接管完成 +{}ms", t0.elapsed().as_millis()));
-            g
-        }
+    // The session already exists during these bounded synchronous calls, so a
+    // timeout/cancel can target this exact startup instead of a global latest.
+    guard.link_gen = match UsbLink::open(serial, w, h) {
+        Ok(g) => g,
         Err(e) => {
             crate::logging::warn(&format!("USB 不可用，仅预览：{e}"));
             None
         }
     };
-    // 接管尝试已结束（无论成败）：前端可以安全读信息了（成功则复用句柄、失败则自己开）
-    LINK_READY.store(true, Ordering::SeqCst);
-    // 线程创建失败时闭包会被丢弃，链路不会有人收尾 —— 先留一份代数用于兜底。
-    let link_gen_for_error = link_gen;
+    session.check()?;
+    let io_gen = current_link_gen();
+    let session_id = session.id;
+    let cancel = session.cancel.clone();
+    // Arm the worker owner before spawn: even Builder::spawn failure drops the
+    // closure/guard and retires the link before finishing this session.
+    if !lifecycle().mark_running(session_id) { return Err("启动请求已取消".into()); }
 
     // 管线跑在**独立线程 + current_thread 运行时**里，不再占用 Tauri 的 async worker。
     // `with_link` 里的同步 USB 读写（含最长 3s 的管道超时）只阻塞这一条线程；
@@ -244,7 +280,7 @@ pub fn start(
     let spawn = std::thread::Builder::new()
         .name("render-pipeline".into())
         .spawn(move || {
-            let _running = RunningGuard;
+            let _session_guard = guard;
             // 预览限频到目标帧率：不影响 USB 下发，只砍掉超过帧率的 IPC / 前端解码开销
             let app_preview = app.clone();
             let mut last: Option<std::time::Instant> = None;
@@ -265,8 +301,8 @@ pub fn start(
                     }
                 }
                 last = Some(now);
-                // 走 Channel 推原始 PNG 字节（不是 base64、不是事件）
-                preview_send(png.to_vec());
+                // Only this GUI path adds JDP1 + u64 LE session identity.
+                preview_send(session_id, png);
             };
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -275,10 +311,7 @@ pub fn start(
                 Ok(rt) => rt,
                 Err(e) => {
                     crate::logging::error(&format!("创建管线运行时失败：{e}"));
-                    // 线程已拿到接管权，但还没进监督循环：这里自己把链路还掉，避免泄漏。
-                    if let Some(g) = link_gen {
-                        close_link_if_gen(g);
-                    }
+                    // SessionGuard also covers runtime construction failure.
                     return;
                 }
             };
@@ -292,17 +325,13 @@ pub fn start(
                 None,
                 Some(app),
                 render::PANEL_CDP_PORT,
-                link_gen,
+                None, // SessionGuard owns GUI cleanup, supervisor only borrows.
+                io_gen,
             )) {
                 crate::logging::error(&format!("render 出错：{e}"));
             }
         });
     if let Err(e) = spawn {
-        RUNNING.store(false, Ordering::SeqCst);
-        LINK_READY.store(true, Ordering::SeqCst);
-        if let Some(g) = link_gen_for_error {
-            close_link_if_gen(g);
-        }
         return Err(format!("创建渲染线程失败：{e}"));
     }
     Ok("started".into())
@@ -679,6 +708,7 @@ pub fn run_headless(
             None,
             port,
             link_gen,
+            current_link_gen(),
         )
         .await;
         browser.kill();
@@ -891,6 +921,7 @@ async fn run_supervised<F: FnMut(&[u8], u32, u32, u64)>(
     app: Option<AppHandle>,
     cdp_port: u16,
     link_gen: Option<u64>,
+    io_gen: Option<u64>,
 ) -> Result<(u64, u64), String> {
     let _link_guard = LinkGuard(link_gen);
     let needle = panel_file_name(&url);
@@ -938,7 +969,7 @@ async fn run_supervised<F: FnMut(&[u8], u32, u32, u64)>(
                 }
             },
         };
-        match run_inner(&mut on_frame, ws, url.clone(), w, h, cancel.clone(), remaining).await {
+        match run_inner(&mut on_frame, ws, url.clone(), w, h, cancel.clone(), remaining, io_gen).await {
             Ok((f, s)) => {
                 frames += f;
                 sent += s;
@@ -970,12 +1001,14 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
     h: u32,
     cancel: Arc<AtomicBool>,
     seconds: Option<f64>,
+    io_gen: Option<u64>,
 ) -> Result<(u64, u64), String> {
     let t0 = std::time::Instant::now();
     let mut cdp = setup_session(&ws, &url, w, h).await?;
     // 设备句柄由 `run_supervised` 统一持有：CDP 会话断开重连时**不重新移交 USB**。
-    // 每轮重新读一次 `LINK_OPEN`：上一轮若因拔线被关掉，这里自然退回仅预览。
-    let mut has_usb = link_open();
+    // Reconnect can reuse only this session's generation, never a new link
+    // installed by a later external command.
+    let mut has_usb = io_gen.is_some() && current_link_gen() == io_gen;
     if !has_usb {
         crate::logging::warn("USB 未接管，本轮仅预览");
     }
@@ -1079,14 +1112,14 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
                     }
                 }
                 if has_usb {
-                    let r = with_link(|u| match &rects {
+                    let r = with_link_if_gen(io_gen.expect("has_usb requires generation"), |u| match &rects {
                         None => u.send_full(&rgb565),
                         Some(rs) => u.send_rects(&rgb565, fw as usize, rs),
                     });
                     match r {
                         Ok(Some(s)) => {
                             sent += 1;
-                            prev = rgb565;
+                            commit_frame_baseline(&mut prev, rgb565, s.kind);
                             st.sent += 1;
                             st.bytes += s.bytes as u64;
                             st.write_ms += s.write_ms;
@@ -1115,6 +1148,9 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
                         // 画面没动：`send_rects` 直接返回，一个字节都没发（USB 流量为零）
                         Ok(None) => st.skip += 1,
                         Err(e) => {
+                            // 写入可能只完成一部分，设备上的画面已不再能由旧基线准确描述。
+                            // 下一次必须整屏重发，不能让静止帧被差分优化永久跳过。
+                            prev.clear();
                             st.fail += 1;
                             // **必须进日志文件**：旧版这里是 eprintln，release 无控制台 → 断联零痕迹
                             TxStats::warn_throttled(
@@ -1127,7 +1163,7 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
                             // 界面表现为死机。立刻释放链路、退回「仅预览」，等用户重新插好。
                             if link_unusable(&e) {
                                 crate::logging::warn(&format!("设备已断开，停止下发（仅预览）：{e}"));
-                                close_link();
+                                if let Some(g) = io_gen { close_link_if_gen(g); }
                                 has_usb = false;
                             }
                         }
@@ -1191,6 +1227,16 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
         Ok((frames, sent))
     } else {
         Err(format!("{reason}"))
+    }
+}
+
+/// 只有 ACK=ok 才能确认设备上的画面；超时/exit/err 都必须丢弃差分基线。
+/// 否则静止页面在一次失败后会永远被当成「画面没变」而不再重发。
+fn commit_frame_baseline(prev: &mut Vec<u8>, frame: Vec<u8>, ack_kind: &str) {
+    if ack_kind == "ok" {
+        *prev = frame;
+    } else {
+        prev.clear();
     }
 }
 
@@ -1308,13 +1354,18 @@ pub static LINK: Mutex<Option<Arc<Mutex<UsbLink>>>> = Mutex::new(None);
 /// 不会因为 USB 管道超时（3s）把 tokio worker 占满 → 所有 invoke 一起卡住。
 /// 这里用原子量 + 一把只做 clone 的短锁，轮询永远不会被 USB 阻塞。
 static LINK_OPEN: AtomicBool = AtomicBool::new(false);
-static LINK_SN: Mutex<Option<String>> = Mutex::new(None);
+// Metadata is independent of USB's inner mutex and published under LINK's
+// short outer lock, so retirement cannot overwrite a newer link's snapshot.
+static LINK_META: Mutex<(Option<u64>, Option<String>)> = Mutex::new((None, None));
 
 /// 更新链路快照（每次 `LINK` 变化后调用；只做一次 clone，不碰 USB）。
-fn publish_link_state(open: bool, serial: Option<String>) {
-    LINK_OPEN.store(open, Ordering::SeqCst);
-    *LINK_SN.lock().unwrap() = serial;
+fn publish_link_state(gen_id: Option<u64>, serial: Option<String>) {
+    *LINK_META.lock().unwrap() = (gen_id, serial);
+    LINK_OPEN.store(gen_id.is_some(), Ordering::SeqCst);
 }
+fn current_link_gen() -> Option<u64> { LINK_META.lock().unwrap().0 }
+pub fn link_generation() -> Option<u64> { current_link_gen() }
+fn link_metadata() -> (Option<u64>, Option<String>) { LINK_META.lock().unwrap().clone() }
 
 /// 串行化「打开设备」：**同一时刻只允许一次移交 + 打开**。
 /// 否则 `render_start` 返回后管线线程还在做 USB 接管，前端紧接着的 `device_info`
@@ -1330,7 +1381,7 @@ static OPEN_LOCK: Mutex<()> = Mutex::new(());
 const OPEN_BUDGET: Duration = Duration::from_secs(8);
 
 /// 管线是否已经**尝试过**接管 USB（成功或失败都算）。前端据此避免和管线抢设备。
-static LINK_READY: AtomicBool = AtomicBool::new(false);
+// Readiness is session-scoped in Lifecycle; no global completion may set it.
 
 /// 链路「代数」：每新打开一次 +1。管线收尾只关**自己那一代**的链路。
 /// 场景：上一轮管线 4s 内没停（`start` 里超时仍继续启动）时，新一轮会重新接管；
@@ -1346,12 +1397,12 @@ pub fn link_open() -> bool {
 /// 管线是否已经做过 USB 接管尝试。新版 `render_start` 返回时已完成；
 /// 前端保留这个查询作为后台重连/异常退出的兜底。
 pub fn link_ready() -> bool {
-    LINK_READY.load(Ordering::SeqCst)
+    lifecycle().snapshot().ready
 }
 
 /// 当前接管中的设备 SN（没接管则 None）。多设备下用来判断命令该发给哪台。
 pub fn link_serial() -> Option<String> {
-    LINK_SN.lock().unwrap().clone()
+    LINK_META.lock().unwrap().1.clone()
 }
 
 /// 用共享设备执行一段操作。
@@ -1365,6 +1416,15 @@ pub fn with_link<T>(f: impl FnOnce(&UsbLink) -> Result<T, String>) -> Result<T, 
     };
     let guard = link.lock().unwrap();
     f(&guard)
+}
+
+/// Execute only on the captured generation, including the check under its I/O
+/// mutex. Old render/release callbacks must never operate on a newer link.
+fn with_link_if_gen<T>(gen_id: u64, f: impl FnOnce(&UsbLink) -> Result<T, String>) -> Result<T, String> {
+    with_link(|link| {
+        if link.gen_id != gen_id { return Err("设备链路已更换".into()); }
+        f(link)
+    })
 }
 
 /// 下发失败是否意味着「这条链路已经不能用了」：
@@ -1382,22 +1442,27 @@ pub fn open_link(serial: Option<String>) -> Result<Option<u64>, String> {
     UsbLink::open(serial, 0, 0)
 }
 
-/// 释放设备（`UsbLink::Drop` 归还租约）。**无条件关**：用于「停止」/退出等确实要交还设备的场景。
+/// Unconditional release is reserved for explicit user stop/exit paths where
+/// generation scoping is deliberately unnecessary. Delayed/error callbacks MUST
+/// capture their generation and use close_link_if_gen instead.
+#[allow(dead_code)]
 pub fn close_link() {
-    let old = LINK.lock().unwrap().take();
-    publish_link_state(false, None);
-    // 等当前 USB 操作结束（最多一次管道超时），在锁内立刻关句柄：
-    // 这样紧接着的新一轮 `CreateFileW` 不会撞上还没关掉的旧句柄。
-    if let Some(link) = old.as_ref() {
-        let mut g = link.lock().unwrap();
-        drop(g.dev.take());
-    }
-    drop(old); // 出锁再析构：归还租约要走一次 HTTP
+    let _open_guard = OPEN_LOCK.lock().unwrap();
+    let old = {
+        let mut slot = LINK.lock().unwrap();
+        let old = slot.take();
+        publish_link_state(None, None);
+        old
+    };
+    retire_link(old);
 }
 
 /// **只关指定代数**的链路：若当前链路已被更新的一轮接管（代数不同），则原样不动。
 /// 返回是否真的关了。用于管线收尾 / 临时接管收尾，避免误关别人的链路。
+/// Device commands and other external callbacks MUST close their captured
+/// generation, never call unconditional close_link() after a delayed failure.
 pub fn close_link_if_gen(gen_id: u64) -> bool {
+    let _open_guard = OPEN_LOCK.lock().unwrap();
     // 先克隆 Arc、放开外层锁，再读代数：绝不在持外层锁时等一次 3s 的 USB 操作。
     let link = { LINK.lock().unwrap().as_ref().cloned() };
     let Some(link) = link else {
@@ -1413,22 +1478,36 @@ pub fn close_link_if_gen(gen_id: u64) -> bool {
             .map(|cur| Arc::ptr_eq(cur, &link))
             .unwrap_or(false);
         if same {
-            g.take()
+            let old = g.take();
+            publish_link_state(None, None);
+            old
         } else {
             None
         }
     };
     let hit = old.is_some();
-    if hit {
-        publish_link_state(false, None);
-        if let Some(link) = old.as_ref() {
-            // 与 `close_link` 一样：等在途 I/O 结束，锁内立刻关句柄，避免新旧句柄重叠。
+    retire_link(old);
+    hit
+}
+
+/// Detach lease ownership while holding only this link's I/O mutex, then finish
+/// HTTP outside it. Waiting device commands may still own Arc clones; they must
+/// not defer lease return until after Lifecycle has already reported idle.
+fn retire_link(old: Option<Arc<Mutex<UsbLink>>>) {
+    if let Some(link) = old {
+        let (lease, serial) = {
             let mut g = link.lock().unwrap();
             drop(g.dev.take());
+            (g.lease.take(), g.serial.clone())
+        };
+        if let Some(id) = lease {
+            stop_keepalive(Some(&id));
+            match handoff::handoff_finish(&id, &serial) {
+                Ok(_) => crate::logging::info(&format!("归还租约 {id}（{serial}）")),
+                Err(e) => crate::logging::warn(&format!("归还租约失败：{e}")),
+            }
         }
     }
-    drop(old);
-    hit
 }
 
 /// 离开作用域即释放设备（覆盖 `?` 提前返回）。携带「本轮自己打开的链路代数」，
@@ -1593,13 +1672,16 @@ impl UsbLink {
                         "GUI 未运行：直接接管"
                     });
                     let gen_id = LINK_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-                    *LINK.lock().unwrap() = Some(Arc::new(Mutex::new(UsbLink {
-                        dev: Some(dev),
-                        serial: target.clone(),
-                        lease: None,
-                        gen_id,
-                    })));
-                    publish_link_state(true, Some(target));
+                    {
+                        let mut slot = LINK.lock().unwrap();
+                        *slot = Some(Arc::new(Mutex::new(UsbLink {
+                            dev: Some(dev),
+                            serial: target.clone(),
+                            lease: None,
+                            gen_id,
+                        })));
+                        publish_link_state(Some(gen_id), Some(target));
+                    }
                     return Ok(Some(gen_id));
                 }
                 // GUI 也说没连着、本地又打不开 → 这台设备**确实不在了**（多半已被拔掉）。
@@ -1687,13 +1769,16 @@ impl UsbLink {
                 start_keepalive(id.clone(), target.clone());
             }
             let gen_id = LINK_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-            *LINK.lock().unwrap() = Some(Arc::new(Mutex::new(UsbLink {
-                dev: Some(dev),
-                serial: target.clone(),
-                lease,
-                gen_id,
-            })));
-            publish_link_state(true, Some(target));
+            {
+                let mut slot = LINK.lock().unwrap();
+                *slot = Some(Arc::new(Mutex::new(UsbLink {
+                    dev: Some(dev),
+                    serial: target.clone(),
+                    lease,
+                    gen_id,
+                })));
+                publish_link_state(Some(gen_id), Some(target));
+            }
             return Ok(Some(gen_id));
         }
 
@@ -1765,12 +1850,36 @@ impl Drop for UsbLink {
     fn drop(&mut self) {
         // 先关 USB 句柄，再归还租约
         drop(self.dev.take());
-        stop_keepalive(self.lease.as_deref()); // 只停本链接的续期线程（避免误停新链接的）
         if let Some(id) = self.lease.take() {
+            stop_keepalive(Some(&id)); // Never let a retired/no-lease Arc stop a newer keepalive.
             match handoff::handoff_finish(&id, &self.serial) {
                 Ok(_) => crate::logging::info(&format!("归还租约 {id}（{}）", self.serial)),
                 Err(e) => crate::logging::warn(&format!("归还租约失败：{e}")),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::commit_frame_baseline;
+
+    #[test]
+    fn successful_ack_commits_the_device_frame() {
+        let mut prev = vec![0, 0];
+        commit_frame_baseline(&mut prev, vec![1, 2], "ok");
+        assert_eq!(prev, vec![1, 2]);
+    }
+
+    #[test]
+    fn unconfirmed_ack_forces_next_frame_to_be_full() {
+        for kind in ["timeout", "exit", "err", "other"] {
+            let mut prev = vec![1, 2];
+            commit_frame_baseline(&mut prev, vec![3, 4], kind);
+            assert!(prev.is_empty(), "未确认回包 {kind} 不能推进差分基线");
+            // 即使页面静止在同一幅画面，下一轮也会走整屏路径（prev.is_empty）。
+            commit_frame_baseline(&mut prev, vec![3, 4], "ok");
+            assert_eq!(prev, vec![3, 4]);
         }
     }
 }
