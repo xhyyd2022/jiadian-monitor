@@ -300,7 +300,7 @@ function cacheDev(serial: string | null | undefined, w: number | null, h: number
   const has = !!variant || (!!w && !!h);
   if (!has) return;
   try {
-    localStorage.setItem(`jiaidian.dev.${serial}`, JSON.stringify({ w, h, variant }));
+    localStorage.setItem(`jiadian.dev.${serial}`, JSON.stringify({ w, h, variant }));
   } catch {
     /* 存储满等异常忽略 */
   }
@@ -308,7 +308,7 @@ function cacheDev(serial: string | null | undefined, w: number | null, h: number
 function cachedDev(serial: string | null | undefined): { w: number | null; h: number | null; variant: string | null } | null {
   if (!serial) return null;
   try {
-    const s = localStorage.getItem(`jiaidian.dev.${serial}`);
+    const s = localStorage.getItem(`jiadian.dev.${serial}`);
     return s ? JSON.parse(s) : null;
   } catch {
     return null;
@@ -362,24 +362,24 @@ function pageOf(name: string): string | null {
 const selectedPage = computed(() => (selected.value ? pageOf(selected.value) : null));
 /** 每尺寸记住上次用的主题（170 / 240 各一份） */
 function getLastTheme(tag: string): string {
-  return localStorage.getItem(`jiaidian.lastTheme.${tag}`) || "";
+  return localStorage.getItem(`jiadian.lastTheme.${tag}`) || "";
 }
 function setLastTheme(tag: string, name: string): void {
-  localStorage.setItem(`jiaidian.lastTheme.${tag}`, name);
+  localStorage.setItem(`jiadian.lastTheme.${tag}`, name);
 }
 /** 上次用的设备（SN）——下次启动默认选它 */
 function getLastDevice(): string {
-  return localStorage.getItem("jiaidian.lastDevice") || "";
+  return localStorage.getItem("jiadian.lastDevice") || "";
 }
 function setLastDevice(sn: string | null | undefined): void {
-  if (sn) localStorage.setItem("jiaidian.lastDevice", sn);
+  if (sn) localStorage.setItem("jiadian.lastDevice", sn);
 }
 let unlistenResize: (() => void) | undefined;
 let unlistenClose: (() => void) | undefined;
 let resizeTimer: number | undefined;
 let previewLogged = false;
 
-// 窗口尺寸写日志：拖好后从 log/jiaidian.log 里读，回写 tauri.conf.json 的整数宽高
+// 窗口尺寸写日志：拖好后从 log/jiadian.log 里读，回写 tauri.conf.json 的整数宽高
 async function logWindowSize(tag: string) {
   try {
     const [size, sf] = await Promise.all([appWindow.innerSize(), appWindow.scaleFactor()]);
@@ -644,7 +644,7 @@ async function startRender() {
     running.value = true;
     curTag.value = selTag.value;
     setLastTheme(selTag.value, selected.value);
-    localStorage.setItem("jiaidian.lastTheme", selected.value); // 兼容旧键
+    localStorage.setItem("jiadian.lastTheme", selected.value); // 兼容旧键
     logEvent(`render_start 返回：${renderMsg.value}（${Math.round(performance.now() - t0)}ms）`);
   } catch (e) {
     renderMsg.value = String(e);
@@ -865,7 +865,7 @@ async function boot() {
   await loadDevices();
   await resolveDevSize();
   const tag = selTag.value;
-  const saved = getLastTheme(tag) || localStorage.getItem("jiaidian.lastTheme") || "";
+  const saved = getLastTheme(tag) || localStorage.getItem("jiadian.lastTheme") || "";
   let pick = "";
   if (saved && themes.value.some((x) => x.name === saved && resolvePage(x))) pick = saved;
   if (!pick) pick = themes.value.find((x) => resolvePage(x))?.name || "";

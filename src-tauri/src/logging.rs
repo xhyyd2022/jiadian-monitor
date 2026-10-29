@@ -1,4 +1,4 @@
-//! 简易文件日志：`log/jiaidian.log`，单文件上限 1 MB，超过就轮转成 `jiaidian.log.1`。
+//! 简易文件日志：`log/jiadian.log`，单文件上限 1 MB，超过就轮转成 `jiadian.log.1`。
 //!
 //! 目的：面板切换卡顿 / 需要点多次这类问题，光看 UI 无从下手，落到文件里才能追溯。
 //! 同时打到 stderr（CLI 直接可见）。
@@ -102,7 +102,7 @@ pub fn init() {
     });
     let Some(dir) = dir else { return };
     let _ = fs::create_dir_all(&dir);
-    let path = dir.join("jiaidian.log");
+    let path = dir.join("jiadian.log");
     let f = OpenOptions::new().create(true).append(true).open(&path).ok();
     *PATH.lock().unwrap() = Some(path);
     *FILE.lock().unwrap() = f;
@@ -166,7 +166,7 @@ fn direct_line(text: &str) {
     if let Ok(mut f) = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join("jiaidian.log"))
+        .open(dir.join("jiadian.log"))
     {
         let _ = f.write_all(format!("{} {text}\n", timestamp()).as_bytes());
         let _ = f.flush();

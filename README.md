@@ -1,6 +1,6 @@
-# jiaidian-monitor
+# jiadian-monitor
 
-把**本机实时硬件数据**通过 USB 推送到**佳点（jiaidian）V1P / V2 小屏设备**的 Windows 桌面监控程序。
+把**本机实时硬件数据**通过 USB 推送到**佳点（jiadian）V1P / V2 小屏设备**的 Windows 桌面监控程序。
 
 程序在本机采集 CPU / 内存 / 磁盘 / 网络 / GPU / 温度 / 风扇等数据，注入一块单文件 HTML「面板」，
 用内嵌的 WebView2 离屏渲染成画面，做像素差分后按 **LIVE 协议**增量下发给设备 —— 设备屏上就是一块
@@ -47,15 +47,15 @@ npm run tauri build    # 生产构建，只生成 exe（不生成安装包）
 
 构建产物：
 
-- 可执行文件：`src-tauri/target/release/jiaidian-monitor.exe`
-- 便携包：发版工作流会生成 `jiaidian-monitor-v<版本>.zip`（exe + `assets/` + `peripherals/` + 卸载脚本）；本地把 exe 与 `assets/`、`peripherals/` 放一起即可运行
+- 可执行文件：`src-tauri/target/release/jiadian-monitor.exe`
+- 便携包：发版工作流会生成 `jiadian-monitor-v<版本>.zip`（exe + `assets/` + `peripherals/` + 卸载脚本）；本地把 exe 与 `assets/`、`peripherals/` 放一起即可运行
 
 ### 便携运行布局
 
 把可执行文件和 `assets/`、`peripherals/` 目录放在一起即可绿色运行：
 
 ```
-jiaidian-monitor.exe
+jiadian-monitor.exe
 settings.ini       全部设置（自动生成，可手工编辑）
 assets/            主题素材（一个主题 = 一层文件夹，文件夹名即主题名）
 peripherals/       外设协议 JSON（index.json + brands/，可直接编辑）

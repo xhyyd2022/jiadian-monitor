@@ -13,7 +13,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, Mes
 static MUTEX: AtomicIsize = AtomicIsize::new(0);
 
 /// `Local\` = 每个登录会话一个（不同 Windows 用户各能开一个；`Global\` 需要特权，普通用户建不出来）。
-const NAME: &str = "Local\\jiaidian-monitor-single";
+const NAME: &str = "Local\\jiadian-monitor-single";
 
 /// 抢单实例锁。`true` = 本次是唯一实例；`false` = 已有实例在跑。
 pub fn acquire() -> bool {
@@ -58,7 +58,7 @@ pub fn wake_existing() -> bool {
 pub fn notify_already_running() {
     unsafe {
         let text: Vec<u16> = "程序已在运行（窗口可能在系统托盘里）。\0".encode_utf16().collect();
-        let cap: Vec<u16> = "jiaidian-monitor\0".encode_utf16().collect();
+        let cap: Vec<u16> = "jiadian-monitor\0".encode_utf16().collect();
         MessageBoxW(
             std::ptr::null_mut(),
             text.as_ptr(),

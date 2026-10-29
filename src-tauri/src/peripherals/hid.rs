@@ -56,6 +56,13 @@ pub struct Endpoint {
     pub product: String,
     pub manufacturer: String,
     pub serial: String,
+    /// 读写句柄打开失败的原因（系统独占的鼠标/键盘集合、厂商驱动占着私有接口）。
+    /// `None` = 正常，能读能写。
+    ///
+    /// **为什么要留着它**：以前打开失败直接 `continue`，设备在 `--peripherals-hid`
+    /// 里凭空消失，用户只看到「什么都没有」，无法判断是自己的鼠标没插、还是被别的软件占了。
+    /// 现在改成「仍然列出来 + 带上原因」，能不能读是后面协议层的事。
+    pub open_error: Option<String>,
 }
 
 fn to_wide(s: &str) -> Vec<u16> {
@@ -105,7 +112,32 @@ fn open_path(path: &str, overlapped: bool) -> Result<HANDLE, String> {
     Ok(h)
 }
 
-fn endpoint_of(path: String, file: HANDLE) -> Option<Endpoint> {
+/// 只查询、不读写的句柄（`dwDesiredAccess = 0`）。
+///
+/// 系统独占的鼠标 / 键盘集合用读写方式一定打不开（ERROR_ACCESS_DENIED），但 0 权限能拿到
+/// VID:PID / UsagePage / 报告长度 / 产品名 —— 诊断输出够用了。
+/// 注意：这种句柄**发不了 Feature/Output 报告**，也读不了 Input，只能用来认设备。
+fn open_query(path: &str) -> Option<HANDLE> {
+    let w = to_wide(path);
+    let h = unsafe {
+        CreateFileW(
+            w.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if h == INVALID_HANDLE_VALUE || h.is_null() {
+        None
+    } else {
+        Some(h)
+    }
+}
+
+fn endpoint_of(path: String, file: HANDLE, open_error: Option<String>) -> Option<Endpoint> {
     unsafe {
         let mut attrs = HIDD_ATTRIBUTES {
             Size: std::mem::size_of::<HIDD_ATTRIBUTES>() as u32,
@@ -116,29 +148,40 @@ fn endpoint_of(path: String, file: HANDLE) -> Option<Endpoint> {
         if !HidD_GetAttributes(file, &mut attrs) {
             return None;
         }
+        // 0 权限句柄上 PreparsedData / 字符串描述符可能拿不到：拿不到就退化成
+        // 「只有 VID:PID」的端点，也照样列出来，不静默丢掉。
+        let mut usage_page = 0u16;
+        let mut usage = 0u16;
+        let mut input_len = 0u16;
+        let mut output_len = 0u16;
+        let mut feature_len = 0u16;
         let mut pp: PHIDP_PREPARSED_DATA = 0;
-        if !HidD_GetPreparsedData(file, &mut pp) || pp == 0 {
-            return None;
-        }
-        let mut caps = HIDP_CAPS::default();
-        let st = HidP_GetCaps(pp, &mut caps);
-        HidD_FreePreparsedData(pp);
-        if st < 0 {
-            return None;
+        if HidD_GetPreparsedData(file, &mut pp) && pp != 0 {
+            let mut caps = HIDP_CAPS::default();
+            let st = HidP_GetCaps(pp, &mut caps);
+            HidD_FreePreparsedData(pp);
+            if st >= 0 {
+                usage_page = caps.UsagePage;
+                usage = caps.Usage;
+                input_len = caps.InputReportByteLength;
+                output_len = caps.OutputReportByteLength;
+                feature_len = caps.FeatureReportByteLength;
+            }
         }
         Some(Endpoint {
             path,
             vid: attrs.VendorID,
             pid: attrs.ProductID,
             version: attrs.VersionNumber,
-            usage_page: caps.UsagePage,
-            usage: caps.Usage,
-            input_len: caps.InputReportByteLength,
-            output_len: caps.OutputReportByteLength,
-            feature_len: caps.FeatureReportByteLength,
+            usage_page,
+            usage,
+            input_len,
+            output_len,
+            feature_len,
             product: hid_string(file, 1),
             manufacturer: hid_string(file, 0),
             serial: hid_string(file, 2),
+            open_error,
         })
     }
 }
@@ -215,11 +258,22 @@ pub fn list_endpoints() -> Result<Vec<Endpoint>, String> {
         }
         let path = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(path_ptr, len) });
 
-        if let Ok(file) = open_path(&path, false) {
-            if let Some(ep) = endpoint_of(path, file) {
-                out.push(ep);
+        match open_path(&path, false) {
+            Ok(file) => {
+                if let Some(ep) = endpoint_of(path, file, None) {
+                    out.push(ep);
+                }
+                unsafe { CloseHandle(file) };
             }
-            unsafe { CloseHandle(file) };
+            Err(e) => {
+                // 读写打不开（系统独占的鼠标/键盘集合最常见）：降级成只查询，照样列出来。
+                if let Some(file) = open_query(&path) {
+                    if let Some(ep) = endpoint_of(path, file, Some(e)) {
+                        out.push(ep);
+                    }
+                    unsafe { CloseHandle(file) };
+                }
+            }
         }
     }
     unsafe { SetupDiDestroyDeviceInfoList(hdev) };

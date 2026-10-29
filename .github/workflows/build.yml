@@ -81,10 +81,10 @@ jobs:
         run: |
           $rel = 'src-tauri/target/release'
           $out = 'portable'
-          $zip = "jiaidian-monitor-v$env:VERSION.zip"
+          $zip = "jiadian-monitor-v$env:VERSION.zip"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
 
-          Copy-Item "$rel/jiaidian-monitor.exe" $out -Force
+          Copy-Item "$rel/jiadian-monitor.exe" $out -Force
           # 递归带上 assets（图标 + 主题）；没有 assets 目录时跳过
           if (Test-Path 'assets') { Copy-Item 'assets' $out -Recurse -Force }
           # 外设协议 JSON（index.json + brands/）：用户可直接编辑，必须随包发布
@@ -107,10 +107,10 @@ jobs:
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: jiaidian-monitor-windows
+          name: jiadian-monitor-windows
           if-no-files-found: error
           path: |
-            jiaidian-monitor-v*.zip
+            jiadian-monitor-v*.zip
 
       # ── 发版步骤 ────────────────────────────────────────────────────────────
 
@@ -168,4 +168,4 @@ jobs:
           body_path: release-body.md
           prerelease: ${{ inputs.prerelease }}
           files: |
-            jiaidian-monitor-v*.zip
+            jiadian-monitor-v*.zip

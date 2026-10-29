@@ -343,7 +343,7 @@ fn ensure_panel_webview(app: &AppHandle, url: &str, w: u32, h: u32) -> Result<()
         return Ok(());
     }
     WebviewWindowBuilder::new(app, "panel", WebviewUrl::External(parsed))
-        .title("jiaidian-panel")
+        .title("jiadian-panel")
         .inner_size(w as f64, h as f64)
         .decorations(false)
         .resizable(false)
@@ -581,7 +581,7 @@ pub fn capture_shot(html: &str, out_png: &str) -> Result<String, String> {
     let exe = render::find_browser().ok_or("找不到 Edge / Chrome")?;
     let url = panel_url(html);
     let profile = std::env::temp_dir()
-        .join("jiaidian-shotprof")
+        .join("jiadian-shotprof")
         .to_string_lossy()
         .to_string();
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -642,7 +642,7 @@ pub fn run_headless(
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let first = std::env::temp_dir().join("jiaidian_first_frame.png");
+    let first = std::env::temp_dir().join("jiadian_first_frame.png");
     let mut n = 0u64;
     let cb = |png: &[u8], fw: u32, fh: u32, frames: u64| {
         println!("  frame {frames}  {fw}x{fh}");
@@ -654,7 +654,7 @@ pub fn run_headless(
     let (frames, sent) = rt.block_on(async move {
         let url = panel_url(&html);
         let profile = std::env::temp_dir()
-            .join("jiaidian-cli-prof")
+            .join("jiadian-cli-prof")
             .to_string_lossy()
             .to_string();
         let port = render::CLI_CDP_PORT;
@@ -1610,7 +1610,7 @@ impl UsbLink {
         }
 
         if gui {
-            let client_id = format!("jiaidian-monitor-{}", std::process::id());
+            let client_id = format!("jiadian-monitor-{}", std::process::id());
             crate::logging::info(&format!("USB 移交：target={target}（GUI 在跑）"));
             // 移交要重试：GUI 可能刚被别的操作占着，或上一次租约还没释放（429）
             let r = {

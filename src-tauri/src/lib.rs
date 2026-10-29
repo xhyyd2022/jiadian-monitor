@@ -512,6 +512,11 @@ pub fn dump_peripherals_hid() -> String {
     peripherals::hid_dump()
 }
 
+/// 无界面：把「PID 命中、VID 没命中」的设备逐个候选档位试一遍（供 `--peripherals-probe`）。
+pub fn dump_peripherals_probe() -> String {
+    peripherals::probe_dump()
+}
+
 /// 无界面：回放所有品牌 JSON 里的 `sample`（供 `--peripherals-selftest`）。
 pub fn peripherals_selftest() -> Result<String, String> {
     let (checked, fails) = peripherals::selftest();
@@ -573,7 +578,7 @@ pub fn usb_test(serial: Option<String>, w: u32, h: u32) -> Result<String, String
             .ok_or("没有可用设备")?,
     };
 
-    let client_id = format!("jiaidian-monitor-{}", std::process::id());
+    let client_id = format!("jiadian-monitor-{}", std::process::id());
     let mut lease: Option<String> = None;
     if gui {
         let r = handoff::handoff_start(&target, &client_id, 90)?;
@@ -702,7 +707,7 @@ pub fn run() {
     // panic 也要落到日志文件：release 是 GUI 子系统、没有控制台，
     // 否则一次崩溃在日志里就是「上一条日志之后什么都没有」。
     logging::install_panic_hook();
-    logging::info("=== jiaidian-monitor 启动 ===");
+    logging::info("=== jiadian-monitor 启动 ===");
     logging::info(&format!("数据源：{}", metrics::source_hint()));
     // 可选 CPU 自算控制器：关闭时不采样，默认 CPU 总值来自 LHS。
     cpu_usage::spawn();
@@ -712,6 +717,9 @@ pub fn run() {
 
     // 外设电量：后台线程按 `peripherals/index.json` 的间隔轮询 HID 设备。
     peripherals::spawn();
+
+    // 改名（jiaidian → jiadian）后把旧的自启动值搬过来，别让它继续指向旧 exe。
+    autostart::migrate_legacy();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

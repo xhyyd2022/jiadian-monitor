@@ -1883,8 +1883,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "jiaidian-monitor"
-version = "0.8.5"
+name = "jiadian-monitor"
+version = "0.8.7"
 dependencies = [
  "base64 0.23.1",
  "futures-util",

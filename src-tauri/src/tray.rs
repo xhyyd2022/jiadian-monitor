@@ -32,7 +32,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let icon = custom.clone().or_else(|| app.default_window_icon().cloned());
 
     let mut builder = TrayIconBuilder::with_id("main")
-        .tooltip("jiaidian-monitor")
+        .tooltip("jiadian-monitor")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, e| match e.id().as_ref() {

@@ -8,7 +8,7 @@ defineEmits<{ (e: "close"): void }>();
 
 <template>
   <header class="titlebar" data-tauri-drag-region>
-    <span class="tb-title" data-tauri-drag-region>jiaidian-monitor</span>
+    <span class="tb-title" data-tauri-drag-region>jiadian-monitor</span>
     <div class="tb-btns">
       <button class="tb-btn" @click="appWindow.minimize()" title="最小化">
         <Icon icon="line-md:minus" />

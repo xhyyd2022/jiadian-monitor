@@ -226,7 +226,7 @@ onUnmounted(() => {
         </select>
       </div>
       <p class="hint">
-        开启时把运行日志写进 <code>log/jiaidian.log</code>（单文件上限 1 MB，超过轮转成
+        开启时把运行日志写进 <code>log/jiadian.log</code>（单文件上限 1 MB，超过轮转成
         <code>.log.1</code>）。三个级别是「门槛」不是分类：全部 = 普通/警告/错误都记、
         警告及以上 = 只记警告与错误、仅错误 = 只记错误。排查面板切换卡顿 / 接管失败 /
         长时间断联时用；关闭后不再写日志，省掉这部分磁盘写入与内存开销。

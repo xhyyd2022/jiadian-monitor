@@ -198,14 +198,14 @@ fn offline_msi() -> Option<PathBuf> {
     cands.into_iter().find(|p| p.is_file())
 }
 
-/// 缓存目录候选：先 `%TEMP%\jiaidian-monitor`，写不进去再退到 exe 同级的 `cache/`，
+/// 缓存目录候选：先 `%TEMP%\jiadian-monitor`，写不进去再退到 exe 同级的 `cache/`，
 /// 最后退到当前工作目录下的 `cache/`。
 ///
 /// 为什么要退：`%TEMP%` 在某些环境下会被安全策略拦掉（企业管控、把 TEMP 指向不可写路径、
 /// 或者进程被降权启动），这时如果只有一条路，用户看到的就是"装不了"，而且跟网络毫无关系。
 /// 多给两个候选，绝大多数受限环境都能自动落到能写的地方。
 fn cache_dirs() -> Vec<PathBuf> {
-    let mut v = vec![std::env::temp_dir().join("jiaidian-monitor")];
+    let mut v = vec![std::env::temp_dir().join("jiadian-monitor")];
     if let Ok(exe) = std::env::current_exe() {
         if let Some(d) = exe.parent() {
             let p = d.join("cache");

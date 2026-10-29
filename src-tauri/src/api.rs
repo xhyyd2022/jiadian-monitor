@@ -246,7 +246,7 @@ fn dispatch(method: &str, route: &str) -> (&'static str, &'static str, String) {
 /// 自描述索引：让别的程序（或人）一眼看出有哪些数据可取。
 fn index() -> String {
     serde_json::json!({
-        "name": "jiaidian-monitor local data API",
+        "name": "jiadian-monitor local data API",
         "version": env!("CARGO_PKG_VERSION"),
         "note": "只监听回环地址（127.0.0.1 / [::1]，localhost 亦可），仅本机可访问，因此不做鉴权",
         "base": base_url(),

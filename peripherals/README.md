@@ -236,16 +236,25 @@ peripherals/
 2. `index.json` 的 `devices` 加一行指向已有品牌；新品牌则在 `brands` 加一条并在 `brands/` 下建文件。
 3. 品牌文件里写协议档位：先抄最接近的旧档位，再改 `match` / `tx` / `rx` / `battery`。
 4. 填一条 `sample` 回放。
-5. `jiaidian-monitor.exe --peripherals-selftest` 看回放是否通过。
+5. `jiadian-monitor.exe --peripherals-selftest` 看回放是否通过。
 6. 打开界面「外设」页看真实读数。
 
 ## 四、调试命令
 
 ```
-jiaidian-monitor.exe --peripherals-hid        # 本机所有 HID 端点：VID/PID/Usage/长度/产品名
-jiaidian-monitor.exe --peripherals-dump       # 当前识别到的外设（等同 GET /peripherals）
-jiaidian-monitor.exe --peripherals-selftest   # 回放所有品牌的 sample
+jiadian-monitor.exe --peripherals-hid        # 本机所有 HID 端点：VID/PID/Usage/长度/产品名
+jiadian-monitor.exe --peripherals-dump       # 当前识别到的外设（等同 GET /peripherals）
+jiadian-monitor.exe --peripherals-probe      # PID 命中但 VID 未收录时，逐个候选档位真机试一遍
+jiadian-monitor.exe --peripherals-selftest   # 回放所有品牌的 sample
 ```
+
+`--peripherals-probe` 是给「同一颗芯片的公版方案」用的：`index.json` 里只登记了
+`3554:F503`，你手里是换壳的 `1234:F503`——PID 认得、VID 没收录。它会把这个 PID 下
+所有登记过的档位按「只读的先、要写 OUT 帧的后」逐个打开试，谁读回合法电量就标「← 可用」。
+测出来之后把 VID 补进 `index.json` 即可，以后就不用再试。
+
+运行时也走同一套逻辑：某个设备的 `VID:PID` 精确匹配不上，但 PID 有登记，程序会自动试一遍，
+选中哪个档位写进界面备注（「PID 命中、VID 未收录，档位是自动试出来的」），并按设备缓存结论。
 
 ## 五、已知取舍
 

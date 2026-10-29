@@ -45,7 +45,7 @@
 | @iconify/vue | 5.0.3 | MIT | https://github.com/iconify/iconify |
 | @iconify-icons/line-md | 2.0.0 | MIT | https://github.com/iconify/icon-sets |
 
-### 后端（Rust，静态链接进 `jiaidian-monitor.exe`）
+### 后端（Rust，静态链接进 `jiadian-monitor.exe`）
 
 | 组件 | 版本 | 许可证 | 来源 |
 |---|---|---|---|

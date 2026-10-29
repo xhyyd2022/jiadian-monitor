@@ -14,7 +14,7 @@ const autostart = ref(false);
 /// 静默启动：启动时不显示窗口，直接收进托盘。**下次启动生效**。
 const silentStart = ref(false);
 const closeToTray = ref(true);
-/// 运行日志输出：关掉后不再写 `log/jiaidian.log`，省掉这部分磁盘 I/O。
+/// 运行日志输出：关掉后不再写 `log/jiadian.log`，省掉这部分磁盘 I/O。
 const logging = ref(true);
 /// 日志级别门槛：`info` 全部 / `warn` 只记警告与错误 / `error` 只记错误。
 /// **只在 `logging` 开启时才有意义**（关掉日志时界面不显示这一项）。

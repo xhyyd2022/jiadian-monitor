@@ -128,13 +128,13 @@ impl Settings {
     fn to_ini(&self) -> String {
         let b = |v: bool| if v { 1 } else { 0 };
         format!(
-            "; jiaidian-monitor 设置 —— 改完保存，程序启动时读取（运行中改请用界面）。\n\
+            "; jiadian-monitor 设置 —— 改完保存，程序启动时读取（运行中改请用界面）。\n\
              ; 取值：0 = 关 / 1 = 开；留空 = 跟随素材。\n\
              \n\
              [app]\n\
              ; 启动时不显示窗口，直接收进托盘（左键托盘图标恢复）\n\
              silent_start={}\n\
-             ; 是否写 log/jiaidian.log（0 = 不写，省磁盘 I/O）\n\
+             ; 是否写 log/jiadian.log（0 = 不写，省磁盘 I/O）\n\
              logging={}\n\
              ; 日志级别：info = 全部 / warn = 只记警告与错误 / error = 只记错误；\n\
              ; 仅在 logging=1 时有效\n\

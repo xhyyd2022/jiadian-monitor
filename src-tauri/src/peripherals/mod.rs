@@ -73,12 +73,12 @@ pub fn dir_label(dir: &Path) -> String {
         .unwrap_or_else(|| "peripherals".to_string())
 }
 
-/// 当前可执行文件名（`jiaidian-monitor.exe`）。界面上的示例命令行用它，不写死。
+/// 当前可执行文件名（`jiadian-monitor.exe`）。界面上的示例命令行用它，不写死。
 pub fn exe_name() -> String {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .unwrap_or_else(|| "jiaidian-monitor.exe".to_string())
+        .unwrap_or_else(|| "jiadian-monitor.exe".to_string())
 }
 
 /// 读盘结果的缓存。键是「index.json + brands/ 下全部文件的 mtime+大小」。
@@ -188,12 +188,14 @@ pub fn load_cached() -> Result<Arc<Loaded>, String> {
 // ---------------------------------------------------------------- 匹配解析
 
 /// 一个 HID 端点匹配到的完整读取方案。
+#[derive(Clone, Copy)]
 struct Resolved<'a> {
     brand_key: &'a str,
     brand_name: &'a str,
     protocol_name: &'a str,
     protocol: &'a Protocol,
-    entry: &'a model::DeviceEntry,
+    /// `index.json` 里命中的条目；走公版兜底时为 `None`（没登记就没有型号/分类可继承）。
+    entry: Option<&'a model::DeviceEntry>,
 }
 
 fn match_endpoint(m: Option<&MatchSpec>, ep: &hid::Endpoint) -> bool {
@@ -233,6 +235,135 @@ fn match_endpoint(m: Option<&MatchSpec>, ep: &hid::Endpoint) -> bool {
 }
 
 /// 给一个 HID 端点选品牌与协议档位：精确 VID:PID 优先于通配，指名档位优先于其它。
+/// 公版兜底：`index.json` 里没登记的设备，只要端点对得上 `brands/generic.json` 的档位就照读。
+///
+/// 约定是「默认公版，读不到再报错」——不是「没收录就消失」。标准 HID 电量
+/// （UsagePage 0006 / Usage 0020）本来就是协议自带的，不少无线键鼠/手柄直接按这个报，
+/// 没理由因为查不到 VID:PID 就把整台设备丢掉。
+fn generic_fallback<'a>(ld: &'a Loaded, ep: &hid::Endpoint) -> Option<Resolved<'a>> {
+    let bf = ld.brands.get("generic")?;
+    let brand_name = ld
+        .index
+        .brands
+        .get("generic")
+        .map(|b| if b.name.is_empty() { "generic" } else { b.name.as_str() })
+        .unwrap_or("通用 HID");
+    let mut names: Vec<&str> = Vec::new();
+    if let Some(p) = bf.default.as_deref() {
+        names.push(p);
+    }
+    for k in bf.protocols.keys() {
+        if !names.iter().any(|n| *n == k.as_str()) {
+            names.push(k.as_str());
+        }
+    }
+    for n in names {
+        let Some((k, pr)) = bf.protocols.get_key_value(n) else {
+            continue;
+        };
+        if !match_endpoint(pr.match_spec.as_ref(), ep) {
+            continue;
+        }
+        return Some(Resolved {
+            brand_key: "generic",
+            brand_name,
+            protocol_name: k.as_str(),
+            protocol: pr,
+            entry: None,
+        });
+    }
+    None
+}
+
+/// PID 命中、VID 没命中的候选档位。
+///
+/// 场景：`index.json` 登记的是 `3554:F503`，用户手里是换壳/换接收器的同款 —— PID 认得、VID 没收录。
+/// 老逻辑按 VID:PID 精确匹配，一台对不上就整台消失。这里把「同 PID 但不同 VID」的条目的档位
+/// 按顺序列出来，交给 `probe_once()` 真机试：谁先读回合法电量就用谁。
+fn loose_candidates<'a>(ld: &'a Loaded, ep: &hid::Endpoint) -> Vec<Resolved<'a>> {
+    let mut out: Vec<Resolved<'a>> = Vec::new();
+    let mut seen: Vec<(String, String)> = Vec::new();
+    // 只认「PID 是写死的具体值」的条目。`pid: "*"` 的含义是「这个 VID 下所有型号」，
+    // 拿它去按 PID 猜品牌等于对全机设备乱试——本机实测会把主板灯效、USB 音频都写一遍。
+    if !looks_like_peripheral(ep) {
+        return out;
+    }
+    for d in &ld.index.devices {
+        if !matches!(d.pid, model::VidPid::Exact(_)) || !d.pid.matches(ep.pid) {
+            continue;
+        }
+        if d.vid.matches(ep.vid) {
+            continue;
+        }
+        let Some(brand_ref) = ld.index.brands.get(&d.brand) else {
+            continue;
+        };
+        let Some(bf) = ld.brands.get(&d.brand) else {
+            continue;
+        };
+        let mut names: Vec<&str> = Vec::new();
+        if let Some(p) = d.protocol.as_deref() {
+            names.push(p);
+        }
+        if let Some(p) = bf.default.as_deref() {
+            if !names.contains(&p) {
+                names.push(p);
+            }
+        }
+        for k in bf.protocols.keys() {
+            if !names.iter().any(|n| *n == k.as_str()) {
+                names.push(k.as_str());
+            }
+        }
+        for n in names {
+            let Some((k, pr)) = bf.protocols.get_key_value(n) else {
+                continue;
+            };
+            if !match_endpoint(pr.match_spec.as_ref(), ep) {
+                continue;
+            }
+            let key = (d.brand.clone(), k.to_string());
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            out.push(Resolved {
+                brand_key: d.brand.as_str(),
+                brand_name: if brand_ref.name.is_empty() {
+                    d.brand.as_str()
+                } else {
+                    brand_ref.name.as_str()
+                },
+                protocol_name: k.as_str(),
+                protocol: pr,
+                entry: Some(d),
+            });
+        }
+    }
+    out
+}
+
+/// 打开设备真试一遍：先试只读档位（Feature / Input），再试要写查询帧的 Output 档位。
+/// 返回第一个读回合法电量的方案。
+///
+/// 只在「PID 命中、VID 没命中」时用，候选集来自同一 PID 的登记条目，不会拿无关设备的协议乱写。
+fn probe_once<'a>(ld: &'a Loaded, ep: &hid::Endpoint) -> Option<(Resolved<'a>, Readout)> {
+    let (read_only, writes): (Vec<Resolved<'a>>, Vec<Resolved<'a>>) = loose_candidates(ld, ep)
+        .into_iter()
+        .partition(|c| c.protocol.transport != Transport::Output);
+    for c in read_only.into_iter().chain(writes) {
+        let Ok(dev) = hid::HidDevice::open(ep) else {
+            continue;
+        };
+        if let Ok(out) = run_protocol(c.protocol, &dev, ep) {
+            if out.battery.is_some() {
+                return Some((c, out));
+            }
+        }
+    }
+    None
+}
+
 fn resolve<'a>(ld: &'a Loaded, ep: &hid::Endpoint) -> Option<Resolved<'a>> {
     let mut cands: Vec<&model::DeviceEntry> = ld
         .index
@@ -241,7 +372,8 @@ fn resolve<'a>(ld: &'a Loaded, ep: &hid::Endpoint) -> Option<Resolved<'a>> {
         .filter(|d| d.accepts(ep.vid, ep.pid))
         .collect();
     if cands.is_empty() {
-        return None;
+        // 没登记 → 先看公版协议认不认这个端点（标准 HID 电量）。
+        return generic_fallback(ld, ep);
     }
     cands.sort_by_key(|d| d.rank());
 
@@ -283,11 +415,12 @@ fn resolve<'a>(ld: &'a Loaded, ep: &hid::Endpoint) -> Option<Resolved<'a>> {
                 },
                 protocol_name: pr.0.as_str(),
                 protocol: pr.1,
-                entry: d,
+                entry: Some(d),
             });
         }
     }
-    None
+    // 品牌认得、但私有协议全对不上：最后再看公版（比如这只鼠标同时暴露了标准电量集合）。
+    generic_fallback(ld, ep)
 }
 
 /// 只认品牌、不认协议：`index.json` 里登记过这个 VID:PID 就把它找出来。
@@ -329,10 +462,28 @@ fn entry_only<'a>(
 
 /// 一个设备暴露的端点摘要，写进「没匹配上」的原因里，方便直接照着补 JSON。
 fn endpoint_brief(ep: &hid::Endpoint) -> String {
-    format!(
+    let base = format!(
         "UsagePage {:04X}/Usage {:04X}（输入 {} 输出 {} Feature {}）",
         ep.usage_page, ep.usage, ep.input_len, ep.output_len, ep.feature_len
-    )
+    );
+    match &ep.open_error {
+        None => base,
+        // 端点被别的程序攥着时，就算 match 写对了也读不到 —— 必须写进原因里。
+        Some(e) => format!("{base}，且打不开：{e}"),
+    }
+}
+
+/// 这个端点像不像「外设」（鼠标 / 键盘 / 耳机 / 接收器）。
+///
+/// 只用来给「未收录设备」提示做过滤：不滤的话，主板灯效、USB 音频、显示器 HID
+/// 全都会被当成「未收录的外设」，提示就没意义了。
+fn looks_like_peripheral(ep: &hid::Endpoint) -> bool {
+    // 标准鼠标 / 键盘集合
+    if ep.usage_page == 0x0001 && matches!(ep.usage, 0x02 | 0x06) {
+        return true;
+    }
+    // 厂商自定义页：外设的私有控制接口都在这一段；排掉音频常用的 FFA0 / FFC0
+    (0xFF00..=0xFFFE).contains(&ep.usage_page) && !matches!(ep.usage_page, 0xFFA0 | 0xFFC0)
 }
 
 // ---------------------------------------------------------------- 结果结构
@@ -768,12 +919,16 @@ struct DevState {
 
 struct Poller {
     devs: BTreeMap<String, DevState>,
+    /// 「PID 命中、VID 没命中」时试出来的结论：`(vid,pid) -> (品牌 key, 档位名)`。
+    /// 缓存住就不必每 3 秒重试一遍，设备拔掉后跟着 `devs` 一起清。
+    decided: BTreeMap<(u16, u16), (String, String)>,
 }
 
 impl Poller {
     fn new() -> Poller {
         Poller {
             devs: BTreeMap::new(),
+            decided: BTreeMap::new(),
         }
     }
 
@@ -817,7 +972,32 @@ impl Poller {
             if ep.input_len == 0 && ep.output_len == 0 && ep.feature_len == 0 {
                 continue;
             }
-            let Some(r) = resolve(&ld, ep) else {
+            let r = match resolve(&ld, ep) {
+                Some(r) => Some(r),
+                None => {
+                    // 精确匹配失败：如果「PID 命中、VID 没命中」，就真机试一遍候选档位，
+                    // 试出来的结论按 (VID,PID) 缓存，后面几轮直接复用，不反复开设备。
+                    let key = (ep.vid, ep.pid);
+                    let cached = self.decided.get(&key).cloned();
+                    let hit = cached.and_then(|(bk, pn)| {
+                        loose_candidates(&ld, ep)
+                            .into_iter()
+                            .find(|c| c.brand_key == bk && c.protocol_name == pn)
+                    });
+                    match hit {
+                        Some(r) => Some(r),
+                        None => match probe_once(&ld, ep) {
+                            Some((r, _out)) => {
+                                self.decided
+                                    .insert(key, (r.brand_key.to_string(), r.protocol_name.to_string()));
+                                Some(r)
+                            }
+                            None => None,
+                        },
+                    }
+                }
+            };
+            let Some(r) = r else {
                 if entry_only(&ld, ep.vid, ep.pid).is_some() {
                     unmatched
                         .entry((ep.vid, ep.pid))
@@ -841,6 +1021,9 @@ impl Poller {
         for k in chosen.keys() {
             unmatched.remove(k);
         }
+        // 试出来的结论只对当前还在的设备有效。
+        self.decided
+            .retain(|k, _| chosen.contains_key(k) || unmatched.contains_key(k));
 
         // 本轮没出现的设备直接忘掉，下次插上按新设备处理。
         let seen: Vec<String> = chosen
@@ -877,8 +1060,7 @@ impl Poller {
 
             let model = res
                 .entry
-                .model
-                .clone()
+                .and_then(|e| e.model.clone())
                 .unwrap_or_else(|| ep.product.clone());
             let mut reading = Reading {
                 vid: format!("{vid:04X}"),
@@ -887,14 +1069,32 @@ impl Poller {
                 brand_key: res.brand_key.to_string(),
                 model: model.clone(),
                 name: Reading::name_of(res.brand_name, &model),
-                category: res.entry.category.clone().unwrap_or_else(|| "Other".into()),
+                category: res
+                    .entry
+                    .and_then(|e| e.category.clone())
+                    .unwrap_or_else(|| "Other".into()),
                 protocol: res.protocol_name.to_string(),
                 transport: res.protocol.transport.label().to_string(),
-                note: res
-                    .entry
-                    .note
-                    .clone()
-                    .or_else(|| res.protocol.note.clone()),
+                note: {
+                    // 条目认得 PID、但不认得这个 VID：说明档位是「试」出来的，得写在界面上，
+                    // 不然用户以为这个 VID 已经被正式收录了。
+                    let loose = res
+                        .entry
+                        .map(|e| !e.accepts(ep.vid, ep.pid))
+                        .unwrap_or(false);
+                    let base = res
+                        .entry
+                        .and_then(|e| e.note.clone())
+                        .or_else(|| res.protocol.note.clone());
+                    if loose {
+                        Some(match base {
+                            Some(t) => format!("PID 命中、VID 未收录，档位是自动试出来的；{t}"),
+                            None => "PID 命中、VID 未收录，档位是自动试出来的".to_string(),
+                        })
+                    } else {
+                        base
+                    }
+                },
                 supported: true,
                 ..Reading::default()
             };
@@ -973,6 +1173,44 @@ impl Poller {
             });
         }
 
+        // `index.json` 里查不到 VID:PID 的设备：以前直接静默丢弃，界面只剩一句「没有识别到已收录的外设」，
+        // 用户根本分不清「没插上 / 没收录 / 被厂商软件占着」。这里汇总成一行提示，只做展示，不参与读数。
+        let mut unknown: BTreeMap<(u16, u16), String> = BTreeMap::new();
+        for ep in &endpoints {
+            if chosen.contains_key(&(ep.vid, ep.pid)) || unmatched.contains_key(&(ep.vid, ep.pid)) {
+                continue;
+            }
+            if !looks_like_peripheral(ep) {
+                continue;
+            }
+            unknown
+                .entry((ep.vid, ep.pid))
+                .or_insert_with(|| ep.product.trim().to_string());
+        }
+        if !unknown.is_empty() {
+            let mut items: Vec<String> = unknown
+                .iter()
+                .map(|((v, p), name)| {
+                    if name.is_empty() {
+                        format!("{v:04X}:{p:04X}")
+                    } else {
+                        format!("{v:04X}:{p:04X}（{name}）")
+                    }
+                })
+                .collect();
+            let extra = items.len().saturating_sub(6);
+            items.truncate(6);
+            snap.errors.push(format!(
+                "未收录的 HID 设备：{}{}。在 peripherals/index.json 的 devices 里补一条 vid/pid 就能开始识别",
+                items.join("、"),
+                if extra > 0 {
+                    format!(" 等 {} 个", items.len() + extra)
+                } else {
+                    String::new()
+                }
+            ));
+        }
+
         snap.devices.sort_by(|a, b| {
             a.brand_key
                 .cmp(&b.brand_key)
@@ -1027,14 +1265,15 @@ pub fn hid_dump() -> String {
         Ok(v) => v,
         Err(e) => return format!("枚举 HID 失败：{e}"),
     };
-    let mut s = format!("HID 端点数：{}\n", eps.len());
+    let closed = eps.iter().filter(|e| e.open_error.is_some()).count();
+    let mut s = format!("HID 端点数：{}（其中 {closed} 个只能查询、不能读写）\n", eps.len());
     s.push_str(&format!(
-        "{:<9} {:<6} {:<6} {:>4} {:>4} {:>4} {:<24} {}\n",
-        "VID:PID", "UsageP", "Usage", "In", "Out", "Feat", "产品名", "厂商"
+        "{:<9} {:<6} {:<6} {:>4} {:>4} {:>4} {:<24} {:<16} {}\n",
+        "VID:PID", "UsageP", "Usage", "In", "Out", "Feat", "产品名", "厂商", "状态"
     ));
     for e in &eps {
         s.push_str(&format!(
-            "{:04X}:{:04X} {:04X}   {:04X}   {:>4} {:>4} {:>4} {:<24} {}\n",
+            "{:04X}:{:04X} {:04X}   {:04X}   {:>4} {:>4} {:>4} {:<24} {:<16} {}\n",
             e.vid,
             e.pid,
             e.usage_page,
@@ -1043,8 +1282,91 @@ pub fn hid_dump() -> String {
             e.output_len,
             e.feature_len,
             if e.product.is_empty() { "-" } else { &e.product },
-            e.manufacturer
+            if e.manufacturer.is_empty() { "-" } else { &e.manufacturer },
+            match &e.open_error {
+                None => "可读写".to_string(),
+                Some(err) => format!("只读查询（{err}）"),
+            }
         ));
+    }
+    if closed > 0 {
+        s.push_str(
+            "\n只读查询的端点发不了 Feature/Output 报告，电量读不到；系统独占的鼠标/键盘集合属于这一类。\n\
+             如果某只鼠标在这里连一行都没有，说明它没枚举出 HID 集合（没插好 / 只走蓝牙 LE 未连接）。\n",
+        );
+    }
+    s
+}
+
+/// `--peripherals-probe`：把所有「精确匹配不上、但 PID 有登记」的设备真机试一遍，
+/// 逐个候选档位打印结果。
+///
+/// 用来解决「知道 PID 但不知道是哪家（VID 没收录）」的情况：跑完就知道哪个档位能读回电量，
+/// 照着把 VID 补进 `index.json` 即可（补完就不用再试了）。
+pub fn probe_dump() -> String {
+    let ld = match load_cached() {
+        Ok(l) => l,
+        Err(e) => return format!("协议库读取失败：{e}"),
+    };
+    let eps = match hid::list_endpoints() {
+        Ok(v) => v,
+        Err(e) => return format!("枚举 HID 失败：{e}"),
+    };
+    let mut groups: BTreeMap<(u16, u16), Vec<&hid::Endpoint>> = BTreeMap::new();
+    for ep in &eps {
+        if ep.input_len == 0 && ep.output_len == 0 && ep.feature_len == 0 {
+            continue;
+        }
+        groups.entry((ep.vid, ep.pid)).or_default().push(ep);
+    }
+
+    let mut s = String::new();
+    for ((vid, pid), list) in &groups {
+        // 已经能精确匹配的设备跳过：它们不需要试。
+        if list.iter().any(|e| resolve(&ld, e).is_some()) {
+            continue;
+        }
+        let name = list
+            .iter()
+            .map(|e| e.product.trim())
+            .find(|n| !n.is_empty())
+            .unwrap_or("-");
+        s.push_str(&format!(
+            "\n{vid:04X}:{pid:04X}  {name}（{} 个端点）\n",
+            list.len()
+        ));
+        let mut tried = false;
+        for ep in list {
+            let cands = loose_candidates(&ld, ep);
+            if cands.is_empty() {
+                continue;
+            }
+            tried = true;
+            s.push_str(&format!("  端点 {}\n", endpoint_brief(ep)));
+            for c in cands {
+                let r = hid::HidDevice::open(ep).and_then(|dev| run_protocol(c.protocol, &dev, ep));
+                match r {
+                    Ok(o) => s.push_str(&format!(
+                        "    {}/{} → 电量 {:?}，充电 {:?}{}\n",
+                        c.brand_key,
+                        c.protocol_name,
+                        o.battery,
+                        o.charging,
+                        if o.battery.is_some() { "  ← 可用" } else { "" }
+                    )),
+                    Err(e) => s.push_str(&format!(
+                        "    {}/{} → 失败：{e}\n",
+                        c.brand_key, c.protocol_name
+                    )),
+                }
+            }
+        }
+        if !tried {
+            s.push_str("  没有 PID 命中的候选档位：index.json 里没有这个 PID，需要新写一条\n");
+        }
+    }
+    if s.is_empty() {
+        s.push_str("没有需要试的设备：所有端点都已精确命中，或协议库里没有任何同 PID 的候选。\n");
     }
     s
 }
