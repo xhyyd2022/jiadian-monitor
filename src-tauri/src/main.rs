@@ -62,6 +62,11 @@ fn main() {
         emit_cli("peripherals-hid.txt", &jiadian_monitor_lib::dump_peripherals_hid());
         return;
     }
+    // 逐 HID 集合展开：只在排查「某只鼠标有哪几个集合」时才需要，默认输出是聚合过的。
+    if args.iter().any(|a| a == "--peripherals-hid-all") {
+        emit_cli("peripherals-hid-all.txt", &jiadian_monitor_lib::dump_peripherals_hid_all());
+        return;
+    }
     if args.iter().any(|a| a == "--peripherals-dump") {
         emit_cli("peripherals-dump.json", &jiadian_monitor_lib::dump_peripherals_json());
         return;

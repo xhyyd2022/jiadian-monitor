@@ -518,6 +518,35 @@ async fn peripherals_refresh() -> serde_json::Value {
     peripherals::json()
 }
 
+/// 改一只外设的显示名（写进 settings.ini，返回改名后的快照）。
+///
+/// `instance` 为空 = 同型号共用；`name` 为空 = 恢复默认名。
+#[tauri::command]
+fn peripherals_rename(
+    vid: String,
+    pid: String,
+    instance: Option<String>,
+    name: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let vid_num = u16::from_str_radix(vid.trim(), 16)
+        .map_err(|_| format!("VID 不是合法的十六进制：{vid}"))?;
+    let pid_num = u16::from_str_radix(pid.trim(), 16)
+        .map_err(|_| format!("PID 不是合法的十六进制：{pid}"))?;
+    peripherals::rename(vid_num, pid_num, instance.as_deref(), name.as_deref())?;
+    logging::info(&format!(
+        "[peripherals] 改名：{:04X}:{:04X}{} -> {}",
+        vid_num,
+        pid_num,
+        instance
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("@{s}"))
+            .unwrap_or_default(),
+        name.as_deref().unwrap_or("（恢复默认）")
+    ));
+    Ok(peripherals::json())
+}
+
 /// 外设协议库目录的**相对标签**（如 `<程序目录>\peripherals`）。
 ///
 /// 界面显示这个而不是绝对路径：程序装在哪个盘、哪个目录都不影响显示，
@@ -546,6 +575,11 @@ pub fn dump_peripherals_json() -> String {
 /// 无界面：列出本机 HID 端点（供 `--peripherals-hid`）。
 pub fn dump_peripherals_hid() -> String {
     peripherals::hid_dump()
+}
+
+/// 无界面：逐 HID 集合展开（`--peripherals-hid-all`），协议排查用。
+pub fn dump_peripherals_hid_all() -> String {
+    peripherals::hid_dump_all()
 }
 
 /// 无界面：把「PID 命中、VID 没命中」的设备逐个候选档位试一遍（供 `--peripherals-probe`）。
@@ -840,6 +874,7 @@ pub fn run() {
             import_panel,
             peripherals_state,
             peripherals_refresh,
+            peripherals_rename,
             peripherals_dir,
             peripherals_open_dir,
             hide_to_tray

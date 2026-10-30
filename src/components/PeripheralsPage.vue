@@ -11,6 +11,16 @@ interface Reading {
   brandKey: string;
   model: string;
   name: string;
+  /// 同型号内的实例短指纹（4 位十六进制）
+  instance: string;
+  /// 默认名（品牌+型号）
+  defaultName: string;
+  /// 用户改过的名字；null = 没改过
+  customName: string | null;
+  /// live / retrying / sleeping / unavailable / unsupported
+  state: string;
+  lastSeenMs: number;
+  asleepSinceMs: number | null;
   category: string;
   protocol: string;
   transport: string;
@@ -64,28 +74,89 @@ function levelClass(r: Reading): string {
   return "bad";
 }
 
-/// 电量文案：读不到就说「—」，不猜。
+/// 电量文案：读不到就说「—」，不猜。休眠时保留上一次读数（界面上另有「休眠中」标注）。
 function levelText(r: Reading): string {
-  if (!r.supported) return "未支持";
+  if (r.state === "unsupported") return "未支持";
   if (r.battery === null) return "—";
   return `${r.battery}%`;
 }
 
-/// 状态点：真读到=绿；退避缓存=黄；读失败=红；认得品牌但没协议=灰。
+/// 状态点：正常绿；重试黄；休眠/未收录灰；从没读到过红。
 function dotClass(r: Reading): string {
-  if (r.error) return "bad";
-  if (!r.online) return "off";
-  if (r.stale) return "warn";
-  return "ok";
+  switch (r.state) {
+    case "live":
+      return "ok";
+    case "retrying":
+      return "warn";
+    case "unsupported":
+    case "sleeping":
+      return "off";
+    default:
+      return r.error ? "bad" : "off";
+  }
 }
 
-/// 一行状态说明：错误优先，其次充电/退避。
+/// 多久以前（只给提示文案用，跟着 1.5 秒的轮询自然刷新）。
+function ago(ms: number): string {
+  if (!ms) return "未知";
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return `${s} 秒前`;
+  if (s < 3600) return `${Math.round(s / 60)} 分钟前`;
+  return `${Math.round(s / 3600)} 小时前`;
+}
+
+/// 一行状态说明：休眠/失败/未支持优先，其次充电。
 function rowHint(r: Reading): string {
-  if (r.error) return r.error;
-  if (r.stale) return "设备在省电，显示的是上一次读数";
+  if (r.state === "sleeping") return `休眠中：连续几次读不到，上次读数在${ago(r.lastSeenMs)}`;
+  if (r.state === "retrying") return `这次没读到（${r.error ?? "未知原因"}），正在重试`;
+  if (r.state === "unsupported") return r.error ?? "认得品牌，但协议里没有匹配这个端点的档位";
+  if (r.state === "unavailable") return r.error ?? "还没读到过电量";
   if (r.charging === true) return "充电中";
   if (r.charging === false) return "放电中";
   return "";
+}
+
+/// 同型号是否出现了多台：多台才需要把名字锁到实例，单台按型号存（换 USB 口不丢名）。
+function sameModel(r: Reading): boolean {
+  return devices.value.filter((d) => d.vid === r.vid && d.pid === r.pid).length > 1;
+}
+
+const editing = ref("");
+const draft = ref("");
+
+function keyOf(r: Reading): string {
+  return `${r.vid}:${r.pid}@${r.instance}`;
+}
+
+function startEdit(r: Reading) {
+  editing.value = keyOf(r);
+  draft.value = r.name;
+}
+
+function cancelEdit() {
+  editing.value = "";
+  draft.value = "";
+}
+
+async function saveEdit(r: Reading) {
+  if (editing.value !== keyOf(r)) return;
+  const value = draft.value.trim();
+  if (value === r.name) {
+    cancelEdit();
+    return;
+  }
+  try {
+    snap.value = await invoke<Snapshot>("peripherals_rename", {
+      vid: r.vid,
+      pid: r.pid,
+      instance: sameModel(r) ? r.instance : null,
+      name: value || null,
+    });
+    msg.value = value ? "名称已保存到 settings.ini" : "已恢复默认名";
+    cancelEdit();
+  } catch (e) {
+    msg.value = String(e);
+  }
 }
 
 async function refresh(force = false) {
@@ -149,15 +220,44 @@ onUnmounted(() => {
         {{
           msg ||
           (devices.length
-            ? `电量每 ${pollText} 读一次；协议来自 peripherals/brands 下的 JSON，按 index.json 里的 PID 绑定品牌。`
+            ? `电量每 ${pollText} 读一次；点行尾的笔或双击名称可改显示名（存进 settings.ini，本地 API 同步生效）。`
             : "没有识别到已收录的外设。插上鼠标 / 键盘 / 耳机，或在 peripherals/index.json 里补一条 PID。")
         }}
       </p>
 
-      <div v-for="(r, i) in devices" :key="`${r.vid}:${r.pid}:${i}`" class="row">
+      <div v-for="r in devices" :key="keyOf(r)" class="row">
         <span class="dot" :class="dotClass(r)" :title="rowHint(r)"></span>
-        <span class="lbl" :title="rowHint(r)">{{ r.name }}</span>
-        <span class="val" :class="levelClass(r)">{{ levelText(r) }}</span>
+        <template v-if="editing === keyOf(r)">
+          <input
+            v-model="draft"
+            class="rename"
+            maxlength="24"
+            autofocus
+            placeholder="留空 = 恢复默认名"
+            @keydown.enter.prevent="saveEdit(r)"
+            @keydown.esc.prevent="cancelEdit"
+            @blur="saveEdit(r)"
+          />
+          <button
+            class="mini icon"
+            title="保存（点空白处也会保存）"
+            aria-label="保存"
+            @mousedown.prevent
+            @click="saveEdit(r)"
+          >
+            <Icon icon="line-md:confirm-circle" />
+          </button>
+        </template>
+        <template v-else>
+          <span class="lbl" :title="rowHint(r)" @dblclick="startEdit(r)">
+            {{ r.name }}<span class="inst">·{{ r.instance }}</span>
+            <span v-if="r.state === 'sleeping'" class="tag">休眠中 · {{ ago(r.lastSeenMs) }}</span>
+          </span>
+          <span class="val" :class="levelClass(r)" :title="rowHint(r)">{{ levelText(r) }}</span>
+          <button class="mini icon" title="改显示名（存进 settings.ini）" aria-label="改名" @click="startEdit(r)">
+            <Icon icon="line-md:edit" />
+          </button>
+        </template>
       </div>
 
       <p v-if="snap && snap.errors.length" class="hint err">

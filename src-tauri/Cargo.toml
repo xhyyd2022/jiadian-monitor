@@ -1,6 +1,6 @@
 [package]
 name = "jiadian-monitor"
-version = "0.9.0"
+version = "0.9.1"
 description = "把本机实时硬件数据（CPU / 内存 / 磁盘 / 网络 / GPU / 温度 / 风扇）通过 USB 推送到佳点（jiadian）V1P / V2 小屏设备的 Windows 桌面监控程序"
 authors = ["jiadian-monitor contributors"]
 edition = "2024"
@@ -24,7 +24,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-windows-sys = { version = "0.61.2", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_HumanInterfaceDevice", "Win32_Devices_Usb", "Win32_Foundation", "Win32_Globalization", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Security", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Console", "Win32_System_Memory", "Win32_System_Performance", "Win32_System_Services", "Win32_System_SystemInformation", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_HumanInterfaceDevice", "Win32_Devices_Properties", "Win32_Devices_Usb", "Win32_Foundation", "Win32_Globalization", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Security", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Console", "Win32_System_Memory", "Win32_System_Performance", "Win32_System_Services", "Win32_System_SystemInformation", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 ureq = { version = "3.4.2", features = ["json"] }
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "time", "sync"] }
 tokio-tungstenite = "0.30.0"

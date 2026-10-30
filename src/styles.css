@@ -377,6 +377,48 @@ body {
 .val.bad {
   color: var(--danger);
 }
+/* 外设行：名字后面的实例短指纹（同型号多台时用来区分），以及「休眠中」小标签 */
+.inst {
+  color: var(--sub);
+  font-size: 11px;
+  margin-left: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.row .tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: var(--r-sm);
+  background: var(--btn);
+  color: var(--sub);
+  font-size: 10.5px;
+  line-height: 16px;
+}
+/* 改名输入框：占住名称那一列，别把电量挤走 */
+.row input.rename {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  font-size: 12px;
+  background: var(--btn);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  outline: none;
+}
+.row .mini {
+  flex: none;
+  margin: 0;
+}
+/* 图标按钮：只放一支笔，尺寸跟行高对齐 */
+.row .mini.icon {
+  padding: 2px 5px;
+  font-size: 15px;
+  line-height: 1;
+}
+.row .mini.icon svg {
+  display: block;
+}
 select {
   background: var(--btn);
   color: var(--fg);

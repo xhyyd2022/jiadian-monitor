@@ -284,7 +284,7 @@ fn index() -> String {
             { "method": "GET",  "path": "/devices",  "desc": "设备列表（本地枚举 + 上位机富化）" },
             { "method": "GET",  "path": "/link",     "desc": "USB 接管状态 { open, ready, serial }" },
             { "method": "GET",  "path": "/themes",   "desc": "素材主题列表" },
-            { "method": "GET",  "path": "/peripherals", "desc": "外设（鼠标/键盘/耳机）品牌、型号、电量" },
+            { "method": "GET",  "path": "/peripherals", "desc": "外设（鼠标/键盘/耳机）显示名、型号、电量、休眠状态" },
             { "method": "POST", "path": "/peripherals/refresh", "desc": "重新读协议 JSON 并立刻轮询一轮" },
             { "method": "POST", "path": "/app/show", "desc": "唤起主窗口" },
             { "method": "POST", "path": "/app/quit", "desc": "归还设备后退出" }

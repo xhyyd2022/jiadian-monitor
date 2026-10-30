@@ -16,7 +16,8 @@ use std::os::windows::ffi::OsStrExt;
 
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW,
-    SetupDiGetDeviceInterfaceDetailW, SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W,
+    SetupDiGetDeviceInterfaceDetailW, SetupDiGetDevicePropertyW, HDEVINFO,
+    SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA,
     DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
 };
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
@@ -25,9 +26,10 @@ use windows_sys::Win32::Devices::HumanInterfaceDevice::{
     HidD_GetSerialNumberString, HidD_SetFeature, HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS,
     PHIDP_PREPARSED_DATA,
 };
+use windows_sys::Win32::Devices::Properties::DEVPROPTYPE;
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
-    ERROR_IO_PENDING,
+    DEVPROPKEY, ERROR_IO_PENDING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, WriteFile, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -56,6 +58,12 @@ pub struct Endpoint {
     pub product: String,
     pub manufacturer: String,
     pub serial: String,
+    /// 物理设备身份：Windows 的 `ContainerId`（同一只鼠标的键盘/厂商集合共享同一个 GUID）。
+    /// 拿不到时为空串，调用方再退回路径指纹。
+    ///
+    /// 为什么不用序列号：很多设备根本不报 `iSerialNumber`；而 `ContainerId` 由系统按
+    /// 物理设备分配，**恰好就是「两只同型号鼠标是两只」这件事的官方答案**。
+    pub container: String,
     /// 读写句柄打开失败的原因（系统独占的鼠标/键盘集合、厂商驱动占着私有接口）。
     /// `None` = 正常，能读能写。
     ///
@@ -70,6 +78,45 @@ fn to_wide(s: &str) -> Vec<u16> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect()
+}
+
+/// `DEVPKEY_Device_ContainerId`：Windows 给「一只物理设备」分配的 GUID，
+/// 同一只鼠标的鼠标/键盘/厂商集合共享同一个值，两只同型号鼠标则不同。
+///
+/// 手动写出这个键（而不是开 `Win32_Devices_Properties` 的常量）是为了少开一个 feature；
+/// fmtid/pid 取自 Windows SDK 的 `devpkey.h`。
+const DEVPKEY_DEVICE_CONTAINERID: DEVPROPKEY = DEVPROPKEY {
+    fmtid: windows_sys::core::GUID::from_u128(0x8c7ed206_3f8a_4827_b3ab_ae9e1faefc6c),
+    pid: 2,
+};
+
+/// 查一个设备实例的 ContainerId；查不到（老系统、受限句柄）返回空串。
+fn device_container_id(set: HDEVINFO, info: &SP_DEVINFO_DATA) -> String {
+    let mut kind: DEVPROPTYPE = 0;
+    let mut buf = [0u8; 16];
+    let mut need: u32 = 0;
+    let ok = unsafe {
+        SetupDiGetDevicePropertyW(
+            set,
+            info,
+            &DEVPKEY_DEVICE_CONTAINERID,
+            &mut kind,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            &mut need,
+            0,
+        )
+    };
+    if ok == 0 || need != 16 {
+        return String::new();
+    }
+    let d1 = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    let d2 = u16::from_le_bytes([buf[4], buf[5]]);
+    let d3 = u16::from_le_bytes([buf[6], buf[7]]);
+    format!(
+        "{d1:08x}-{d2:04x}-{d3:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]
+    )
 }
 
 /// 读 HID 字符串描述符（UTF-16LE）。
@@ -137,7 +184,12 @@ fn open_query(path: &str) -> Option<HANDLE> {
     }
 }
 
-fn endpoint_of(path: String, file: HANDLE, open_error: Option<String>) -> Option<Endpoint> {
+fn endpoint_of(
+    path: String,
+    file: HANDLE,
+    open_error: Option<String>,
+    container: String,
+) -> Option<Endpoint> {
     unsafe {
         let mut attrs = HIDD_ATTRIBUTES {
             Size: std::mem::size_of::<HIDD_ATTRIBUTES>() as u32,
@@ -181,6 +233,7 @@ fn endpoint_of(path: String, file: HANDLE, open_error: Option<String>) -> Option
             product: hid_string(file, 1),
             manufacturer: hid_string(file, 0),
             serial: hid_string(file, 2),
+            container,
             open_error,
         })
     }
@@ -238,6 +291,8 @@ pub fn list_endpoints() -> Result<Vec<Endpoint>, String> {
         unsafe {
             *(buf.as_mut_ptr() as *mut u32) = 8; // 64 位下 cbSize
         }
+        let mut devinfo: SP_DEVINFO_DATA = unsafe { std::mem::zeroed() };
+        devinfo.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
         let ok = unsafe {
             SetupDiGetDeviceInterfaceDetailW(
                 hdev,
@@ -245,12 +300,13 @@ pub fn list_endpoints() -> Result<Vec<Endpoint>, String> {
                 buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W,
                 need,
                 &mut need,
-                std::ptr::null_mut(),
+                &mut devinfo,
             )
         };
         if ok == 0 {
             continue;
         }
+        let container = device_container_id(hdev, &devinfo);
         let path_ptr = unsafe { buf.as_ptr().add(4) as *const u16 };
         let mut len = 0usize;
         while unsafe { *path_ptr.add(len) } != 0 {
@@ -260,7 +316,7 @@ pub fn list_endpoints() -> Result<Vec<Endpoint>, String> {
 
         match open_path(&path, false) {
             Ok(file) => {
-                if let Some(ep) = endpoint_of(path, file, None) {
+                if let Some(ep) = endpoint_of(path, file, None, container.clone()) {
                     out.push(ep);
                 }
                 unsafe { CloseHandle(file) };
@@ -268,7 +324,7 @@ pub fn list_endpoints() -> Result<Vec<Endpoint>, String> {
             Err(e) => {
                 // 读写打不开（系统独占的鼠标/键盘集合最常见）：降级成只查询，照样列出来。
                 if let Some(file) = open_query(&path) {
-                    if let Some(ep) = endpoint_of(path, file, Some(e)) {
+                    if let Some(ep) = endpoint_of(path, file, Some(e), container) {
                         out.push(ep);
                     }
                     unsafe { CloseHandle(file) };

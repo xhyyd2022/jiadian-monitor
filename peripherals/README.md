@@ -39,7 +39,7 @@ peripherals/
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `schema` | 是 | 固定 `1` |
-| `poll.intervalMs` | 否 | 全局轮询间隔，默认 `3000` 毫秒。连续读不到会退避到 3 倍 |
+| `poll.intervalMs` | 否 | 全局轮询间隔，默认 `3000` 毫秒。连续读不到时先按正常间隔重试，睡了超过 1 分钟才放慢到 10 秒 |
 | `brands.<key>.name` | 是 | 品牌显示名，界面直接显示 |
 | `brands.<key>.file` | 是 | 相对本目录的路径，通常 `brands/<key>.json` |
 | `devices[].vid` | 是 | 十六进制字符串，不带 `0x`，如 `"1532"` |
@@ -242,11 +242,17 @@ peripherals/
 ## 四、调试命令
 
 ```
-jiadian-monitor.exe --peripherals-hid        # 本机所有 HID 端点：VID/PID/Usage/长度/产品名
-jiadian-monitor.exe --peripherals-dump       # 当前识别到的外设（等同 GET /peripherals）
+jiadian-monitor.exe --peripherals-hid        # 本机物理设备：VID:PID + 短指纹，一行一台（已按 VID:PID + 指纹去重）
+jiadian-monitor.exe --peripherals-hid-all    # 逐 HID 集合展开，排查某个集合的 Usage/长度时用
+jiadian-monitor.exe --peripherals-dump       # 当前识别到的外设（等同 GET /peripherals，含 state/名字字段）
 jiadian-monitor.exe --peripherals-probe      # PID 命中但 VID 未收录时，逐个候选档位真机试一遍
 jiadian-monitor.exe --peripherals-selftest   # 回放所有品牌的 sample
 ```
+
+`--peripherals-hid` 默认**按物理设备聚合**：同一只鼠标的鼠标/键盘/厂商集合合成一行，
+端点数列写有几个集合、`In/Out/Feat` 取各集合最大值、`Usage 集合`去重列出。
+三个报告长度全是 0 的集合直接过滤掉（既不能读也不能写，只会淹没有用的行）。
+两只同型号鼠标会显示成两行，靠「指纹」列区分。
 
 `--peripherals-probe` 是给「同一颗芯片的公版方案」用的：`index.json` 里只登记了
 `3554:F503`，你手里是换壳的 `1234:F503`——PID 认得、VID 没收录。它会把这个 PID 下
@@ -256,7 +262,69 @@ jiadian-monitor.exe --peripherals-selftest   # 回放所有品牌的 sample
 运行时也走同一套逻辑：某个设备的 `VID:PID` 精确匹配不上，但 PID 有登记，程序会自动试一遍，
 选中哪个档位写进界面备注（「PID 命中、VID 未收录，档位是自动试出来的」），并按设备缓存结论。
 
-## 五、已知取舍
+## 五、显示名（存在 settings.ini）与休眠
+
+### 5.1 名字：两层，写在 settings.ini
+
+程序只有一份真值：exe 同级的 `settings.ini`。改完存盘即生效，不用重新编译：
+
+```ini
+[peripherals.names]
+; vid:pid = 同型号共用；vid:pid@短指纹 = 只给这一只
+1532:0555=主用鼠标
+1532:0555@3f2a=左手机
+```
+
+- 键：`vid:pid`（十六进制，大小写不敏感）+ 可选 `@短指纹`。
+- 查名顺序：**实例名 → 型号名 → 默认（品牌 + 型号）**。
+- 名字最长 24 个字符（按字符计，中文算 1 个），换行与控制字符会被去掉；
+  空值 = 删掉这一条、回落默认名。
+- 界面入口：外设页行尾的笔形按钮，或双击名称；Enter 保存、Esc 取消，点空白处也会保存。
+  **同型号只有一台时写型号名**（换 USB 口也不丢）；有多台时才锁到实例。
+
+### 5.2 指纹：怎么区分「同型号第二只」
+
+分组键是 `VID:PID` + 短指纹（4 位十六进制），来源按优先级：
+
+1. Windows `ContainerId` —— 同一只鼠标的多个 HID 集合共享它，两只同型号则不同；
+2. HID 序列号（`iSerialNumber`，很多设备不报）；
+3. HID 路径里的实例段（**换 USB 口会变**，仅前两者都拿不到时兜底）。
+
+对外只暴露 4 位指纹，不打印完整序列号或设备路径。
+
+### 5.3 休眠：有状态，不是「读不到」
+
+| state | 判定 | 界面 | 电量 |
+| --- | --- | --- | --- |
+| `live` | 最近一次读成功 | 绿点 | 实时 |
+| `retrying` | 连续失败 1–2 次 | 黄点 | 上一次读数（暗） |
+| `sleeping` | **曾经读到过** + 连续 3 次失败 | 灰点 +「休眠中 · N 分钟前」 | 保留上一次读数 |
+| `unavailable` | 从没读到过 | 红点 | — |
+| `unsupported` | 认得品牌但档位不匹配 | 灰点 | 未支持 |
+
+- 恢复：任何一次成功读数立刻回 `live`、清掉错误，日志记一条「已恢复（休眠 N 秒）」。
+- **断开就消失**：接收器没了 / 设备拔掉，枚举里找不到就立刻从列表移除，不留灰行；
+  名字仍在 `settings.ini` 里，插回同一只还是原来的名字。
+- 探测节奏：睡着后头 1 分钟按正常间隔（默认 3 秒）探测，随手动一下鼠标就能发现；
+  之后放慢到 10 秒一次，省 CPU 但不至于错过唤醒。
+
+### 5.4 API 字段
+
+`GET /peripherals` 的 `devices[]` 新增：
+
+| 字段 | 含义 |
+| --- | --- |
+| `name` | **生效名**：编辑过就是编辑后的 |
+| `defaultName` | 默认名（品牌 + 型号） |
+| `customName` | 用户设的名字；`null` = 没改过 |
+| `instance` | 4 位实例短指纹 |
+| `state` | `live` / `retrying` / `sleeping` / `unavailable` / `unsupported` |
+| `lastSeenMs` | 最近一次真正读到的毫秒时间戳（`0` = 从未） |
+| `asleepSinceMs` | 判定休眠的时刻；`null` = 没在睡 |
+
+列表顺序：键盘 → 鼠标 → 耳机 → 其他，同类别按显示名。
+
+## 六、已知取舍
 
 - **认得品牌但端点对不上时，设备仍然列出**：`index.json` 里登记了这个 `VID:PID`，但品牌文件里
   没有任何档位的 `match` 配得上它的端点，这时设备照样出现在「外设」页里，品牌型号照常显示，
@@ -266,6 +334,6 @@ jiadian-monitor.exe --peripherals-selftest   # 回放所有品牌的 sample
 - **拿不到就不猜**：固件不回包的（如漫步者 Halo Space 的充电状态），`fields` 里就不要写 `charging`。
   界面显示「未知」，而不是编一个值。
 - **同 VID 多端点必须靠 `match` 隔离**，理由见 2.2。
-- **轮询要轻**：连续 3 次读不到自动退避到 3 倍间隔，设备一出现立刻恢复。
+- **轮询要轻**：连续 3 次读不到判定休眠，头 1 分钟仍按正常间隔探测，之后放慢到 10 秒；设备一恢复立刻回到正常节奏。
 - 不要在 `bytes` / `put.offset` 里写超过 `length` 的偏移，会被忽略并记一条警告。
 - 电量公式是近似的（电压曲线除外）时，在 `note` 里写清楚，别让人以为精确。

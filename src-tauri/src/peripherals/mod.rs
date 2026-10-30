@@ -504,6 +504,19 @@ pub struct Reading {
     pub model: String,
     /// 品牌 + 型号，方便直接显示
     pub name: String,
+    /// 同型号内的实例短指纹（`3f2a`）。同型号出现两只以上时界面靠它区分。
+    pub instance: String,
+    /// 默认名（品牌+型号）。用户改过名之后，靠它还能看见原来是什么。
+    pub default_name: String,
+    /// 用户设的名字（`settings.ini`）；`None` = 没改过。
+    pub custom_name: Option<String>,
+    /// `live` 正常 / `retrying` 失败但还没到休眠阈值 / `sleeping` 判定休眠 /
+    /// `unavailable` 从来没读到过 / `unsupported` 认得品牌但没匹配上协议。
+    pub state: String,
+    /// 最近一次真正读到电量的时刻（毫秒时间戳），`0` = 从未读到。
+    pub last_seen_ms: u64,
+    /// 判定进入休眠的时刻（毫秒时间戳）；`None` = 没在睡。
+    pub asleep_since_ms: Option<u64>,
     /// `Mouse`/`Keyboard`/`Headset`/...
     pub category: String,
     /// 协议档位名
@@ -578,6 +591,22 @@ static STATE: Mutex<Snapshot> = Mutex::new(Snapshot::EMPTY);
 /// 当前快照（不触发读设备）。
 pub fn snapshot() -> Snapshot {
     STATE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// 把一轮结果发布给界面：**在状态锁里用最新名字重算一次**。
+///
+/// 一轮要枚举 HID、开设备读电量，可能几百毫秒。用户正好在这期间改名时，
+/// 本轮开头读到的旧名字如果直接写回，界面上就会看到「刚改好的名字又变回默认」，
+/// 要等下一轮才恢复——只在改名后第一次刷新时出现。
+fn publish(snap: Snapshot) {
+    // 先取设置再加锁：顺序固定为「设置锁 → 状态锁」，和 rename() 一致，避免死锁。
+    let names = crate::settings::current().peripheral_names;
+    let mut g = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut snap = snap;
+    for r in &mut snap.devices {
+        apply_names(r, &names);
+    }
+    *g = snap;
 }
 
 /// 快照的 JSON 形式，给 HTTP API 与 Tauri 命令用。
@@ -913,12 +942,129 @@ fn run_protocol(
 
 struct DevState {
     streak: u32,
+    /// 是否成功读到过电量。**休眠必须先有成功读数**：从来没读到过的设备是
+    /// 「不支持/被独占」，不该被当成「睡着了」。
+    ever_ok: bool,
     next_due: Instant,
     last: Option<Reading>,
+    /// 判定进入休眠的时刻（毫秒时间戳）；`None` = 没在睡。
+    asleep_since_ms: Option<u64>,
+}
+
+/// 设备身份：`VID:PID` + 同型号内的**实例短指纹**。
+///
+/// 为什么需要指纹：两只同型号鼠标的 VID:PID 完全一样，只按 VID:PID 聚合会把它们
+/// 合并成一条、读数互相覆盖。指纹来自 Windows `ContainerId`（见 `hid.rs`），
+/// 同一只鼠标的鼠标/键盘/厂商集合共享它，两只同型号则不同。
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DevKey {
+    vid: u16,
+    pid: u16,
+    inst: String,
+}
+
+impl DevKey {
+    fn model(&self) -> (u16, u16) {
+        (self.vid, self.pid)
+    }
+    /// 给人看的：`1532:0555@3f2a`
+    fn label(&self) -> String {
+        format!("{:04X}:{:04X}@{}", self.vid, self.pid, self.inst)
+    }
+    /// 存 `settings.ini` 用的；键一律小写。
+    fn settings_key(&self) -> String {
+        format!("{:04x}:{:04x}@{}", self.vid, self.pid, self.inst)
+    }
+}
+
+/// 连续失败几次判定为休眠。
+const SLEEP_STREAK: u32 = 3;
+/// 刚睡着的头一分钟按正常间隔探测：用户随手动一下鼠标就能立刻恢复。
+const SLEEP_FAST_MS: u64 = 60_000;
+/// 之后放慢到 10 秒一次：既省 CPU，又不会让「醒来」等太久。
+const SLEEP_SLOW_MS: u64 = 10_000;
+
+fn fingerprint(seed: &str) -> String {
+    // FNV-1a：短、稳定、不用引依赖。指纹只用于区分实例，不做安全用途。
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in seed.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:04x}", ((h >> 32) as u16) ^ (h as u16))
+}
+
+/// 路径里的实例段：`\\?\hid#vid_1532&pid_0555&mi_02&col04#8&2f3a5b6c&0&0003#{guid}`
+/// 取第 3 段。仅在没有 ContainerId 时兜底。
+fn path_instance(path: &str) -> String {
+    path.split('#').nth(2).unwrap_or(path).to_string()
+}
+
+/// 一只物理设备的实例短指纹（4 位十六进制）。
+fn instance_of(ep: &hid::Endpoint) -> String {
+    if !ep.container.is_empty() {
+        fingerprint(&format!("c:{}", ep.container))
+    } else if !ep.serial.trim().is_empty() {
+        fingerprint(&format!("s:{}", ep.serial.trim()))
+    } else {
+        fingerprint(&format!("p:{}", path_instance(&ep.path)))
+    }
+}
+
+fn key_of(ep: &hid::Endpoint) -> DevKey {
+    DevKey {
+        vid: ep.vid,
+        pid: ep.pid,
+        inst: instance_of(ep),
+    }
+}
+
+/// 失败后的状态判定：只有**曾经读到过**的设备才谈得上休眠。
+fn state_of(ever_ok: bool, streak: u32) -> &'static str {
+    if !ever_ok {
+        "unavailable"
+    } else if streak >= SLEEP_STREAK {
+        "sleeping"
+    } else {
+        "retrying"
+    }
+}
+
+/// 从设置里取一只设备的生效名：实例名 → 型号名 → 默认名。
+///
+/// `settings.ini` 里两种键都支持：
+/// `1532:0555=鼠标`（同型号共用）、`1532:0555@3f2a=左手机`（只给这一只）。
+/// 把最新名字套到一条读数上：轮询缓存里的旧读数（休眠/退避期间复用的那份）也要跟着改名，
+/// 否则用户改完名字要等到下一次真正读到才看见。
+fn apply_names(r: &mut Reading, names: &std::collections::BTreeMap<String, String>) {
+    let (Ok(vid), Ok(pid)) = (
+        u16::from_str_radix(&r.vid, 16),
+        u16::from_str_radix(&r.pid, 16),
+    ) else {
+        return;
+    };
+    let key = DevKey { vid, pid, inst: r.instance.clone() };
+    let (name, custom) = effective_name(names, &key, &r.default_name);
+    r.name = name;
+    r.custom_name = custom;
+}
+
+fn effective_name(
+    names: &std::collections::BTreeMap<String, String>,
+    key: &DevKey,
+    default_name: &str,
+) -> (String, Option<String>) {
+    let exact = names.get(&key.settings_key());
+    let model = names.get(&format!("{:04x}:{:04x}", key.vid, key.pid));
+    match exact.or(model) {
+        Some(n) => (n.clone(), Some(n.clone())),
+        None => (default_name.to_string(), None),
+    }
 }
 
 struct Poller {
-    devs: BTreeMap<String, DevState>,
+    /// 按**物理设备**记状态（VID:PID + 实例指纹），不是按 VID:PID。
+    devs: BTreeMap<DevKey, DevState>,
     /// 「PID 命中、VID 没命中」时试出来的结论：`(vid,pid) -> (品牌 key, 档位名)`。
     /// 缓存住就不必每 3 秒重试一遍，设备拔掉后跟着 `devs` 一起清。
     decided: BTreeMap<(u16, u16), (String, String)>,
@@ -964,10 +1110,13 @@ impl Poller {
             }
         };
 
-        // 同一个 VID:PID 只保留一个方案，品牌专用优先于通用兜底。
-        let mut chosen: BTreeMap<(u16, u16), Resolved<'_>> = BTreeMap::new();
+        // 用户改过的外设名（`settings.ini` 的 [peripherals.names]）。每轮现取，
+        // 这样界面上改完、甚至手改 ini 存盘后，下一轮就生效。
+        let names = crate::settings::current().peripheral_names;
+        // 同一只**物理设备**只保留一个方案，品牌专用优先于通用兜底。
+        let mut chosen: BTreeMap<DevKey, Resolved<'_>> = BTreeMap::new();
         // 品牌认得、但没有档位匹配上端点的设备：照常列出来，只是读数未知。
-        let mut unmatched: BTreeMap<(u16, u16), Vec<&hid::Endpoint>> = BTreeMap::new();
+        let mut unmatched: BTreeMap<DevKey, Vec<&hid::Endpoint>> = BTreeMap::new();
         for ep in &endpoints {
             if ep.input_len == 0 && ep.output_len == 0 && ep.feature_len == 0 {
                 continue;
@@ -999,21 +1148,19 @@ impl Poller {
             };
             let Some(r) = r else {
                 if entry_only(&ld, ep.vid, ep.pid).is_some() {
-                    unmatched
-                        .entry((ep.vid, ep.pid))
-                        .or_default()
-                        .push(ep);
+                    unmatched.entry(key_of(ep)).or_default().push(ep);
                 }
                 continue;
             };
-            match chosen.get_mut(&(ep.vid, ep.pid)) {
+            let dk = key_of(ep);
+            match chosen.get_mut(&dk) {
                 Some(cur) => {
                     if cur.brand_key == "generic" && r.brand_key != "generic" {
                         *cur = r;
                     }
                 }
                 None => {
-                    chosen.insert((ep.vid, ep.pid), r);
+                    chosen.insert(dk, r);
                 }
             }
         }
@@ -1021,38 +1168,48 @@ impl Poller {
         for k in chosen.keys() {
             unmatched.remove(k);
         }
-        // 试出来的结论只对当前还在的设备有效。
-        self.decided
-            .retain(|k, _| chosen.contains_key(k) || unmatched.contains_key(k));
+        // 试出来的结论只对当前还在的设备有效；按型号判断，同型号多只共用一次探测结果。
+        self.decided.retain(|k, _| {
+            chosen.keys().any(|d| d.model() == *k) || unmatched.keys().any(|d| d.model() == *k)
+        });
 
-        // 本轮没出现的设备直接忘掉，下次插上按新设备处理。
-        let seen: Vec<String> = chosen
-            .keys()
-            .chain(unmatched.keys())
-            .map(|(v, p)| format!("{v:04X}:{p:04X}"))
-            .collect();
+        // 本轮没出现的设备直接忘掉：拔掉、接收器断开、蓝牙断连都算消失，
+        // 列表里就该立刻没有——名字留在 settings.ini 里，插回来还在。
+        let seen: Vec<DevKey> = chosen.keys().chain(unmatched.keys()).cloned().collect();
         self.devs.retain(|k, _| seen.contains(k));
 
         let base = Duration::from_millis(snap.poll_ms);
-        for ((vid, pid), res) in &chosen {
-            let key = format!("{vid:04X}:{pid:04X}");
+        for (dk, res) in &chosen {
+            let (vid, pid) = dk.model();
             let ep = match endpoints.iter().find(|e| {
-                e.vid == *vid && e.pid == *pid && match_endpoint(res.protocol.match_spec.as_ref(), e)
+                e.vid == vid
+                    && e.pid == pid
+                    && instance_of(e) == dk.inst
+                    && match_endpoint(res.protocol.match_spec.as_ref(), e)
             }) {
                 Some(e) => e,
                 None => continue,
             };
 
             let now = Instant::now();
-            let st = self.devs.entry(key.clone()).or_insert(DevState {
+            let st = self.devs.entry(dk.clone()).or_insert(DevState {
                 streak: 0,
+                ever_ok: false,
                 next_due: now,
                 last: None,
+                asleep_since_ms: None,
             });
 
             if now < st.next_due {
                 if let Some(mut r) = st.last.clone() {
                     r.stale = true;
+                    r.state = if st.asleep_since_ms.is_some() {
+                        "sleeping".into()
+                    } else {
+                        "retrying".into()
+                    };
+                    r.asleep_since_ms = st.asleep_since_ms;
+                    apply_names(&mut r, &names);
                     snap.devices.push(r);
                 }
                 continue;
@@ -1062,13 +1219,25 @@ impl Poller {
                 .entry
                 .and_then(|e| e.model.clone())
                 .unwrap_or_else(|| ep.product.clone());
+            let default_name = Reading::name_of(res.brand_name, &model);
+            let (name, custom) = effective_name(&names, dk, &default_name);
             let mut reading = Reading {
                 vid: format!("{vid:04X}"),
                 pid: format!("{pid:04X}"),
                 brand: res.brand_name.to_string(),
                 brand_key: res.brand_key.to_string(),
                 model: model.clone(),
-                name: Reading::name_of(res.brand_name, &model),
+                name,
+                instance: dk.inst.clone(),
+                default_name,
+                custom_name: custom,
+                state: "retrying".into(),
+                last_seen_ms: st
+                    .last
+                    .as_ref()
+                    .map(|r| r.last_seen_ms)
+                    .unwrap_or(0),
+                asleep_since_ms: st.asleep_since_ms,
                 category: res
                     .entry
                     .and_then(|e| e.category.clone())
@@ -1102,26 +1271,64 @@ impl Poller {
             let result = hid::HidDevice::open(ep).and_then(|dev| run_protocol(res.protocol, &dev, ep));
             match result {
                 Ok(out) => {
+                    if let Some(since) = st.asleep_since_ms.take() {
+                        crate::logging::info(&format!(
+                            "[peripherals] {} 已恢复（休眠 {} 秒）",
+                            dk.label(),
+                            now_ms().saturating_sub(since) / 1000
+                        ));
+                    }
                     reading.online = true;
+                    reading.state = "live".into();
                     reading.battery = out.battery;
                     reading.charging = out.charging;
                     reading.extras = out.extras;
                     if let Some(m) = out.model {
                         reading.model = m.clone();
-                        reading.name = Reading::name_of(res.brand_name, &m);
+                        reading.default_name = Reading::name_of(res.brand_name, &m);
+                        let (name, custom) = effective_name(&names, dk, &reading.default_name);
+                        reading.name = name;
+                        reading.custom_name = custom;
                     }
+                    reading.last_seen_ms = now_ms();
+                    reading.asleep_since_ms = None;
                     st.streak = 0;
+                    st.ever_ok = true;
                     st.next_due = now + base;
                 }
                 Err(e) => {
+                    st.streak = st.streak.saturating_add(1);
+                    // 只有「曾经读到过」的设备才谈得上休眠；从没读到过是「读不到」。
+                    let state = state_of(st.ever_ok, st.streak);
+                    let sleeping = state == "sleeping";
+                    if sleeping && st.asleep_since_ms.is_none() {
+                        st.asleep_since_ms = Some(now_ms());
+                        crate::logging::info(&format!(
+                            "[peripherals] {} 进入休眠（连续 {SLEEP_STREAK} 次读不到：{e}）",
+                            dk.label()
+                        ));
+                    }
                     reading.online = false;
                     reading.charging = None;
                     reading.error = Some(e);
-                    st.streak = st.streak.saturating_add(1);
-                    // 连续读不到就退避到 3 倍间隔：设备在睡觉，别死磕。
+                    // 休眠时保留上一次电量：用户要看到「睡着前是多少」，而不是一个破折号。
+                    if let Some(prev) = &st.last {
+                        reading.battery = prev.battery;
+                        reading.last_seen_ms = prev.last_seen_ms;
+                    }
+                    reading.stale = reading.battery.is_some();
+                    reading.asleep_since_ms = st.asleep_since_ms;
+                    reading.state = state.to_string();
+                    // 刚睡着的头一分钟按正常间隔探测（随手动一下鼠标就能恢复），
+                    // 之后放慢到 10 秒，避免整轮都在开设备。
+                    let slept_for = st
+                        .asleep_since_ms
+                        .map(|t| now_ms().saturating_sub(t))
+                        .unwrap_or(0);
+                    let slow = slept_for >= SLEEP_FAST_MS;
                     st.next_due = now
-                        + if st.streak >= 3 {
-                            base * 3
+                        + if slow {
+                            base.max(Duration::from_millis(SLEEP_SLOW_MS))
                         } else {
                             base
                         };
@@ -1132,8 +1339,9 @@ impl Poller {
         }
 
         // 品牌认得但协议不匹配的设备：照样列出来，电量留空、原因写清楚。
-        for ((vid, pid), eps) in &unmatched {
-            let Some((brand_key, brand_name, entry)) = entry_only(&ld, *vid, *pid) else {
+        for (dk, eps) in &unmatched {
+            let (vid, pid) = dk.model();
+            let Some((brand_key, brand_name, entry)) = entry_only(&ld, vid, pid) else {
                 continue;
             };
             // 型号优先用 index 里登记的；没登记就退回端点自报的产品名。
@@ -1148,13 +1356,21 @@ impl Poller {
                 .unwrap_or_else(|| "未知型号".to_string());
             let briefs: Vec<String> = eps.iter().map(|e| endpoint_brief(e)).collect();
             let proto_hint = entry.protocol.as_deref().unwrap_or("default");
+            let default_name = Reading::name_of(brand_name, &model);
+            let (name, custom) = effective_name(&names, dk, &default_name);
             snap.devices.push(Reading {
                 vid: format!("{vid:04X}"),
                 pid: format!("{pid:04X}"),
                 brand: brand_name.to_string(),
                 brand_key: brand_key.to_string(),
                 model: model.clone(),
-                name: Reading::name_of(brand_name, &model),
+                name,
+                instance: dk.inst.clone(),
+                default_name,
+                custom_name: custom,
+                state: "unsupported".into(),
+                last_seen_ms: 0,
+                asleep_since_ms: None,
                 category: entry.category.clone().unwrap_or_else(|| "Other".into()),
                 protocol: String::new(),
                 transport: String::new(),
@@ -1177,7 +1393,8 @@ impl Poller {
         // 用户根本分不清「没插上 / 没收录 / 被厂商软件占着」。这里汇总成一行提示，只做展示，不参与读数。
         let mut unknown: BTreeMap<(u16, u16), String> = BTreeMap::new();
         for ep in &endpoints {
-            if chosen.contains_key(&(ep.vid, ep.pid)) || unmatched.contains_key(&(ep.vid, ep.pid)) {
+            let dk = key_of(ep);
+            if chosen.contains_key(&dk) || unmatched.contains_key(&dk) {
                 continue;
             }
             if !looks_like_peripheral(ep) {
@@ -1211,10 +1428,21 @@ impl Poller {
             ));
         }
 
+        // 列表顺序：键盘 → 鼠标 → 耳机 → 其他，同类别按显示名；同型号多只再按指纹，
+        // 保证每次刷新顺序稳定，不会因为 HashMap 顺序乱跳。
+        fn rank(c: &str) -> u8 {
+            match c {
+                "Keyboard" => 0,
+                "Mouse" => 1,
+                "Headset" => 2,
+                _ => 3,
+            }
+        }
         snap.devices.sort_by(|a, b| {
-            a.brand_key
-                .cmp(&b.brand_key)
-                .then_with(|| a.model.cmp(&b.model))
+            rank(&a.category)
+                .cmp(&rank(&b.category))
+                .then_with(|| a.name.cmp(&b.name))
+                .then_with(|| a.instance.cmp(&b.instance))
         });
         snap
     }
@@ -1237,10 +1465,7 @@ pub fn spawn() {
                 let started = Instant::now();
                 let snap = poller.run_round();
                 let interval = Duration::from_millis(snap.poll_ms.max(500));
-                {
-                    let mut g = STATE.lock().unwrap_or_else(|e| e.into_inner());
-                    *g = snap;
-                }
+                publish(snap);
                 // 分小段睡，这样外部点刷新能在 200ms 内生效。
                 while started.elapsed() < interval {
                     if FORCE.swap(false, Ordering::SeqCst) {
@@ -1260,41 +1485,147 @@ pub fn spawn() {
 // ---------------------------------------------------------------- 诊断入口
 
 /// `--peripherals-hid`：列出本机所有 HID 端点。
+/// 改一只外设的显示名。`instance` 为空 = 同型号共用；`name` 为空 = 恢复默认名。
+///
+/// 名字写进 `settings.ini` 的 `[peripherals.names]`，并**立刻**套到当前快照上：
+/// 界面和 `/peripherals` 都不用等下一轮轮询。
+pub fn rename(vid: u16, pid: u16, instance: Option<&str>, name: Option<&str>) -> Result<(), String> {
+    let inst = instance.map(str::trim).filter(|s| !s.is_empty());
+    let key = match inst {
+        Some(i) => format!("{vid:04x}:{pid:04x}@{i}"),
+        None => format!("{vid:04x}:{pid:04x}"),
+    };
+    crate::settings::set_peripheral_name(&key, name)?;
+    let names = crate::settings::current().peripheral_names;
+    let mut g = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    for r in &mut g.devices {
+        apply_names(r, &names);
+    }
+    Ok(())
+}
+
+/// `--peripherals-hid`：按**物理设备**聚合，一行一台（默认）。
 pub fn hid_dump() -> String {
+    hid_dump_impl(false)
+}
+
+/// `--peripherals-hid-all`：逐 HID 集合展开，排查协议时才用。
+pub fn hid_dump_all() -> String {
+    hid_dump_impl(true)
+}
+
+fn hid_dump_impl(per_endpoint: bool) -> String {
     let eps = match hid::list_endpoints() {
         Ok(v) => v,
         Err(e) => return format!("枚举 HID 失败：{e}"),
     };
-    let closed = eps.iter().filter(|e| e.open_error.is_some()).count();
-    let mut s = format!("HID 端点数：{}（其中 {closed} 个只能查询、不能读写）\n", eps.len());
-    s.push_str(&format!(
-        "{:<9} {:<6} {:<6} {:>4} {:>4} {:>4} {:<24} {:<16} {}\n",
-        "VID:PID", "UsageP", "Usage", "In", "Out", "Feat", "产品名", "厂商", "状态"
-    ));
-    for e in &eps {
-        s.push_str(&format!(
-            "{:04X}:{:04X} {:04X}   {:04X}   {:>4} {:>4} {:>4} {:<24} {:<16} {}\n",
-            e.vid,
-            e.pid,
-            e.usage_page,
-            e.usage,
-            e.input_len,
-            e.output_len,
-            e.feature_len,
-            if e.product.is_empty() { "-" } else { &e.product },
-            if e.manufacturer.is_empty() { "-" } else { &e.manufacturer },
-            match &e.open_error {
-                None => "可读写".to_string(),
-                Some(err) => format!("只读查询（{err}）"),
-            }
-        ));
-    }
-    if closed > 0 {
-        s.push_str(
-            "\n只读查询的端点发不了 Feature/Output 报告，电量读不到；系统独占的鼠标/键盘集合属于这一类。\n\
-             如果某只鼠标在这里连一行都没有，说明它没枚举出 HID 集合（没插好 / 只走蓝牙 LE 未连接）。\n",
+    let total = eps.len();
+    // 过滤：三个报告长度全是 0 的集合既不能读也不能写，列出来只会淹没真正有用的行。
+    let eps: Vec<&hid::Endpoint> = eps
+        .iter()
+        .filter(|e| e.input_len > 0 || e.output_len > 0 || e.feature_len > 0)
+        .collect();
+    if eps.is_empty() {
+        return format!(
+            "HID 端点数：{total}，过滤掉 {total} 个「无任何报告」的集合后可用的为 0 个。\n\
+             如果确实插了鼠标/键盘却看不到，先确认它是否只走了蓝牙 LE（未连接时不会枚举）。\n"
         );
     }
+
+    // 按物理设备分组：VID:PID + 实例指纹（ContainerId）。同一只鼠标的鼠标/键盘/厂商集合会合成一行。
+    let mut groups: BTreeMap<DevKey, Vec<&hid::Endpoint>> = BTreeMap::new();
+    for e in &eps {
+        groups.entry(key_of(e)).or_default().push(e);
+    }
+
+    let mut s = String::new();
+    if per_endpoint {
+        s.push_str(&format!(
+            "HID 集合：{} 个（原始 {total} 个，已过滤 {} 个无报告集合）\n",
+            eps.len(),
+            total - eps.len()
+        ));
+        s.push_str(&format!(
+            "{:<9} {:<5} {:<6} {:<6} {:>4} {:>4} {:>4} {:<24} {:<16} {}\n",
+            "VID:PID", "指纹", "UsageP", "Usage", "In", "Out", "Feat", "产品名", "厂商", "状态"
+        ));
+        for (dk, list) in &groups {
+            for e in list {
+                s.push_str(&format!(
+                    "{:04X}:{:04X} {:<5} {:04X}   {:04X}   {:>4} {:>4} {:>4} {:<24} {:<16} {}\n",
+                    dk.vid,
+                    dk.pid,
+                    dk.inst,
+                    e.usage_page,
+                    e.usage,
+                    e.input_len,
+                    e.output_len,
+                    e.feature_len,
+                    if e.product.is_empty() { "-" } else { &e.product },
+                    if e.manufacturer.is_empty() { "-" } else { &e.manufacturer },
+                    match &e.open_error {
+                        None => "可读写".to_string(),
+                        Some(err) => format!("只读查询（{err}）"),
+                    }
+                ));
+            }
+        }
+    } else {
+        s.push_str(&format!(
+            "HID 物理设备：{} 台（原始集合 {total} 个，已过滤 {} 个无报告集合；按 VID:PID + 指纹去重）\n",
+            groups.len(),
+            total - eps.len()
+        ));
+        s.push_str(&format!(
+            "{:<9} {:<5} {:>4} {:>7} {:<28} {:<24} {:<14} {}\n",
+            "VID:PID", "指纹", "端点", "In/Out/Feat", "Usage 集合", "产品名", "厂商", "状态"
+        ));
+        for (dk, list) in &groups {
+            let product = list
+                .iter()
+                .map(|e| e.product.trim())
+                .find(|s| !s.is_empty())
+                .unwrap_or("-");
+            let maker = list
+                .iter()
+                .map(|e| e.manufacturer.trim())
+                .find(|s| !s.is_empty())
+                .unwrap_or("-");
+            let max = |f: fn(&hid::Endpoint) -> u16| list.iter().map(|e| f(*e)).max().unwrap_or(0);
+            let mut usages: Vec<String> = list
+                .iter()
+                .map(|e| format!("{:02X}:{:02X}", e.usage_page, e.usage))
+                .collect();
+            usages.sort();
+            usages.dedup();
+            let rw = list.iter().filter(|e| e.open_error.is_none()).count();
+            let ro = list.len() - rw;
+            let status = match (rw, ro) {
+                (_, 0) => format!("可读写 {rw}"),
+                (0, _) => format!("只读查询 {ro}"),
+                _ => format!("可读写 {rw} / 只读 {ro}"),
+            };
+            s.push_str(&format!(
+                "{:04X}:{:04X} {:<5} {:>4} {:>3}/{:<3}/{:<3} {:<28} {:<24} {:<14} {}\n",
+                dk.vid,
+                dk.pid,
+                dk.inst,
+                list.len(),
+                max(|e| e.input_len),
+                max(|e| e.output_len),
+                max(|e| e.feature_len),
+                usages.join(" "),
+                product,
+                maker,
+                status
+            ));
+        }
+    }
+
+    s.push_str(
+        "\n同一台设备的多个集合已合并；要逐集合排查协议，用 --peripherals-hid-all。\n\
+         只读查询的端点发不了 Feature/Output 报告，电量读不到；系统独占的鼠标/键盘集合属于这一类。\n",
+    );
     s
 }
 
@@ -1312,16 +1643,19 @@ pub fn probe_dump() -> String {
         Ok(v) => v,
         Err(e) => return format!("枚举 HID 失败：{e}"),
     };
-    let mut groups: BTreeMap<(u16, u16), Vec<&hid::Endpoint>> = BTreeMap::new();
+    // 先按物理设备分组（VID:PID + 指纹），再在同一条设备里对「档位」去重：
+    // 一只鼠标常有 2–4 个集合，同一个品牌档位不该被反复试 3 遍。
+    let mut groups: BTreeMap<DevKey, Vec<&hid::Endpoint>> = BTreeMap::new();
     for ep in &eps {
         if ep.input_len == 0 && ep.output_len == 0 && ep.feature_len == 0 {
             continue;
         }
-        groups.entry((ep.vid, ep.pid)).or_default().push(ep);
+        groups.entry(key_of(ep)).or_default().push(ep);
     }
 
     let mut s = String::new();
-    for ((vid, pid), list) in &groups {
+    for (dk, list) in &groups {
+        let (vid, pid) = dk.model();
         // 已经能精确匹配的设备跳过：它们不需要试。
         if list.iter().any(|e| resolve(&ld, e).is_some()) {
             continue;
@@ -1332,12 +1666,20 @@ pub fn probe_dump() -> String {
             .find(|n| !n.is_empty())
             .unwrap_or("-");
         s.push_str(&format!(
-            "\n{vid:04X}:{pid:04X}  {name}（{} 个端点）\n",
+            "\n{vid:04X}:{pid:04X}@{}  {name}（{} 个端点）\n",
+            dk.inst,
             list.len()
         ));
         let mut tried = false;
+        let mut seen_protocol: std::collections::BTreeSet<(String, String)> =
+            std::collections::BTreeSet::new();
         for ep in list {
-            let cands = loose_candidates(&ld, ep);
+            let cands: Vec<_> = loose_candidates(&ld, ep)
+                .into_iter()
+                .filter(|c| {
+                    seen_protocol.insert((c.brand_key.to_string(), c.protocol_name.to_string()))
+                })
+                .collect();
             if cands.is_empty() {
                 continue;
             }
@@ -1374,12 +1716,8 @@ pub fn probe_dump() -> String {
 /// `--peripherals-dump`：跑一轮然后打印结果 JSON。
 pub fn dump_text() -> String {
     let mut poller = Poller::new();
-    let snap = poller.run_round();
-    {
-        let mut g = STATE.lock().unwrap_or_else(|e| e.into_inner());
-        *g = snap.clone();
-    }
-    serde_json::to_string_pretty(&snap).unwrap_or_else(|e| format!("序列化失败：{e}"))
+    publish(poller.run_round());
+    serde_json::to_string_pretty(&snapshot()).unwrap_or_else(|e| format!("序列化失败：{e}"))
 }
 
 /// `--peripherals-selftest`：用每份协议自带的 `sample` 回放，返回 (检查数, 失败明细)。
@@ -1470,5 +1808,70 @@ mod tests {
         let (checked, fails) = selftest();
         assert!(checked > 0, "没有任何 sample 可回放");
         assert!(fails.is_empty(), "回放失败：{fails:#?}");
+    }
+
+    fn ep(container: &str, serial: &str, path: &str) -> hid::Endpoint {
+        hid::Endpoint {
+            path: path.to_string(),
+            vid: 0x1532,
+            pid: 0x0555,
+            version: 0x0100,
+            usage_page: 0xFF00,
+            usage: 0x0001,
+            input_len: 64,
+            output_len: 0,
+            feature_len: 64,
+            product: "Test Mouse".into(),
+            manufacturer: "Test".into(),
+            serial: serial.into(),
+            container: container.into(),
+            open_error: None,
+        }
+    }
+
+    #[test]
+    fn instance_prefers_container_then_serial_then_path() {
+        // 容器 ID 相同 = 同一只物理设备（换 USB 口也不变）
+        let a = instance_of(&ep("c-1", "", r"\\?\hid#a#portA#{}"));
+        let b = instance_of(&ep("c-1", "", r"\\?\hid#a#portB#{}"));
+        assert_eq!(a, b);
+        // 容器 ID 不同 = 同型号两只，必须区分
+        let c = instance_of(&ep("c-2", "", r"\\?\hid#a#portA#{}"));
+        assert_ne!(a, c);
+        // 没有容器 ID 时按序列号
+        assert_eq!(instance_of(&ep("", "SN123", "")), instance_of(&ep("", "SN123", "")));
+        // 都没用时按路径实例段兜底
+        assert_ne!(
+            instance_of(&ep("", "", r"\\?\hid#a#P1#{}")),
+            instance_of(&ep("", "", r"\\?\hid#a#P2#{}"))
+        );
+        assert_eq!(a.len(), 4, "短指纹固定 4 位");
+    }
+
+    #[test]
+    fn name_resolution_prefers_instance_then_model() {
+        let key = DevKey { vid: 0x1532, pid: 0x0555, inst: "3f2a".into() };
+        let mut names = BTreeMap::new();
+        assert_eq!(effective_name(&names, &key, "Razer X"), ("Razer X".to_string(), None));
+        names.insert("1532:0555".into(), "鼠标".into());
+        assert_eq!(
+            effective_name(&names, &key, "Razer X"),
+            ("鼠标".to_string(), Some("鼠标".to_string()))
+        );
+        names.insert("1532:0555@3f2a".into(), "左手机".into());
+        assert_eq!(effective_name(&names, &key, "Razer X").0, "左手机");
+        // 另一只同型号没单独改名，继续用型号名
+        let other = DevKey { vid: 0x1532, pid: 0x0555, inst: "aaaa".into() };
+        assert_eq!(effective_name(&names, &other, "Razer X").0, "鼠标");
+        assert_eq!(key.label(), "1532:0555@3f2a");
+        assert_eq!(key.settings_key(), "1532:0555@3f2a");
+    }
+
+    #[test]
+    fn sleep_state_needs_a_previous_reading() {
+        // 从没读到过：是「不可用」，不是「睡着了」
+        assert_eq!(state_of(false, 9), "unavailable");
+        assert_eq!(state_of(true, 1), "retrying");
+        assert_eq!(state_of(true, SLEEP_STREAK), "sleeping");
     }
 }
