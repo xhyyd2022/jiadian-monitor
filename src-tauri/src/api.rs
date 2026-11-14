@@ -19,10 +19,11 @@
 //! - `GET  /devices`   → 设备列表（本地 WinUSB 枚举 + 上位机富化）
 //! - `GET  /link`      → `{ open, ready, serial }`
 //! - `GET  /themes`    → 素材主题列表
-//! - `POST /app/show`  → 唤起主窗口
-//! - `POST /app/quit`  → 归还设备后优雅退出
+//! - `POST /app/show`  → 唤起主窗口（仅本机来源：无 Origin 或 `Origin: null`）
+//! - `POST /app/quit`  → 归还设备后优雅退出（同上）
 //!
 //! 面板是 `file://` 页面（origin 为 null），所以响应统一带 `Access-Control-Allow-Origin: *`。
+//! 在线素材是 https 远程页面，能读数据接口，但控制类接口会被 Origin 校验挡掉（403）。
 
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -178,10 +179,19 @@ fn handle(mut s: TcpStream) -> std::io::Result<()> {
     let method = first.next().unwrap_or("GET").to_string();
     let path = first.next().unwrap_or("/").to_string();
     let route = path.split('?').next().unwrap_or("/");
+    // 只解析需要的头：Origin 用来把「唤起/退出」限制在本机页面（file:// → Origin: null）。
+    let mut origin: Option<String> = None;
+    for line in req.lines().skip(1) {
+        let Some((k, v)) = line.split_once(':') else { continue };
+        if k.trim().eq_ignore_ascii_case("origin") {
+            origin = Some(v.trim().to_string());
+            break;
+        }
+    }
 
     let (status, ctype, body) = {
         let _serial = DISPATCH.lock().unwrap_or_else(|e| e.into_inner());
-        dispatch(&method, route)
+        dispatch(&method, route, origin.as_deref())
     };
 
     let head = format!(
@@ -200,7 +210,12 @@ fn handle(mut s: TcpStream) -> std::io::Result<()> {
     s.flush()
 }
 
-fn dispatch(method: &str, route: &str) -> (&'static str, &'static str, String) {
+/// 控制类接口只允许本机来源：`file://` 页面（`Origin: null`）或本机命令行（无 Origin）。
+fn control_allowed(origin: Option<&str>) -> bool {
+    origin.is_none_or(|o| o.eq_ignore_ascii_case("null"))
+}
+
+fn dispatch(method: &str, route: &str, origin: Option<&str>) -> (&'static str, &'static str, String) {
     // 跨域预检（面板 file:// 直接 fetch 用不到，但第三方网页工具会发）
     if method == "OPTIONS" {
         return ("204 No Content", TEXT, String::new());
@@ -224,7 +239,7 @@ fn dispatch(method: &str, route: &str) -> (&'static str, &'static str, String) {
             JSON,
             crate::settings::to_json(&crate::settings::current()).to_string(),
         ),
-        ("GET", "/devices") => match crate::device_list_blocking() {
+        ("GET", "/devices") => match crate::device_list_blocking(false) {
             Ok(v) => ("200 OK", JSON, serde_json::Value::Array(v).to_string()),
             Err(e) => (
                 "500 Internal Server Error",
@@ -254,14 +269,24 @@ fn dispatch(method: &str, route: &str) -> (&'static str, &'static str, String) {
             crate::peripherals::refresh();
             ("200 OK", TEXT, "refreshing".to_string())
         }
-        // 兼容旧调用：以前不区分方法，GET 也能唤起 / 退出
+        // 兼容旧调用：以前不区分方法，GET 也能唤起 / 退出。
+        // **收紧**：只允许本机页面（file:// → Origin: null）或本机命令行（无 Origin）；
+        // 在线素材是 https 远程页面，Origin 非 null → 403，不能退出/唤起 app。
         (_, "/app/show") => {
-            crate::show_main_window();
-            ("200 OK", TEXT, "ok".to_string())
+            if !control_allowed(origin) {
+                ("403 Forbidden", TEXT, "forbidden: local origin only".to_string())
+            } else {
+                crate::show_main_window();
+                ("200 OK", TEXT, "ok".to_string())
+            }
         }
         (_, "/app/quit") => {
-            crate::request_quit();
-            ("200 OK", TEXT, "quitting".to_string())
+            if !control_allowed(origin) {
+                ("403 Forbidden", TEXT, "forbidden: local origin only".to_string())
+            } else {
+                crate::request_quit();
+                ("200 OK", TEXT, "quitting".to_string())
+            }
         }
         _ => ("404 Not Found", TEXT, "not found".to_string()),
     }
@@ -272,7 +297,7 @@ fn index() -> String {
     serde_json::json!({
         "name": "jiadian-monitor local data API",
         "version": env!("CARGO_PKG_VERSION"),
-        "note": "只监听回环地址（127.0.0.1 / [::1]，localhost 亦可），仅本机可访问，因此不做鉴权",
+        "note": "只监听回环地址（127.0.0.1 / [::1]，localhost 亦可），仅本机可访问；数据接口不做鉴权，控制接口仅接受本机来源（无 Origin / Origin: null）",
         "base": base_url(),
         "endpoints": [
             { "method": "GET",  "path": "/",         "desc": "本索引" },

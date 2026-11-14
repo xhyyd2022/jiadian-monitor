@@ -14,6 +14,22 @@ fn main() {
     // 面板要 fetch 本地指标 API（file:// 页面 origin 为 null）靠的是 API 自己回的
     // `Access-Control-Allow-Origin: *`（见 api.rs），与浏览器安全开关无关；
     // 主题素材也是同目录自包含、无跨目录引用，因此也不需要 `--allow-file-access-from-files`。
+    // 便携模式：把 WebView2 用户数据放在 exe 同级 `webview-data/`。
+    // 不依赖 %LOCALAPPDATA% 的权限/锁（受限环境、部分安全软件、漫游配置下常出现
+    // 0x800700AA「资源在使用中」），同时让 zip 拷贝到别的机器仍可独立运行。
+    if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
+        if let Some(dir) = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|p| p.join("webview-data")))
+        {
+            let _ = std::fs::create_dir_all(&dir);
+            // SAFETY: 这一行发生在任何线程创建/读取环境变量之前（main 最前面），
+            // 之后不再修改；满足 std::env::set_var 的安全前提。
+            unsafe {
+                std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
+            }
+        }
+    }
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 {
         // 顺序有讲究：先挂上父控制台，再改它的输出代码页。反了就是「设了个不存在的控制台」。

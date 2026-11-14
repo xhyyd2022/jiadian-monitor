@@ -100,6 +100,10 @@ jobs:
           }
           # 可选：若仓库内提供了卸载辅助工具，则一并打包（与 exe 同级才能按 %~dp0 找到它）
           if (Test-Path 'scripts/uninstall-lhws.bat') { Copy-Item 'scripts/uninstall-lhws.bat' $out -Force }
+          # 许可证与第三方组件清单：随包分发，方便用户查阅
+          foreach ($f in @('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
+            if (Test-Path $f) { Copy-Item $f $out -Force }
+          }
 
           Compress-Archive -Path "$out/*" -DestinationPath $zip -Force
           Get-ChildItem $zip | Select-Object Name, Length

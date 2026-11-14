@@ -56,6 +56,12 @@ pub struct Settings {
     /// 外设显示名。键见 [`normalize_peripheral_key`]：
     /// `vid:pid` = 同型号共用；`vid:pid@短指纹` = 只给这一只。
     pub peripheral_names: BTreeMap<String, String>,
+    /// 用户背景图文件名（exe 同级 `ui/` 下；空 = 纯色）。
+    pub appearance_bg: String,
+    /// 强调色 `#RRGGBB`（空 = 跟随主题默认色）。
+    pub appearance_accent: String,
+    /// 界面不透明度 40–100（100 = 完全不透明）。
+    pub appearance_opacity: u8,
 }
 
 /// 外设名字的最大字符数（按 Unicode 字符计，中文算 1 个）。
@@ -68,6 +74,35 @@ pub const PERIPHERAL_NAME_MAX_CHARS: usize = 24;
 pub fn clean_peripheral_name(raw: &str) -> String {
     let filtered: String = raw.chars().filter(|c| !c.is_control()).collect();
     filtered.trim().chars().take(PERIPHERAL_NAME_MAX_CHARS).collect()
+}
+
+/// 清洗用户背景文件名：只允许 `ui/` 下的普通文件名（防路径穿越）。
+pub fn clean_bg_name(raw: &str) -> String {
+    let name = raw.trim();
+    if name.is_empty() || name.len() > 96 || name.starts_with('.') {
+        return String::new();
+    }
+    let ok = name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    let ok_ext = name
+        .rsplit_once('.')
+        .map(|(_, ext)| matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp"))
+        .unwrap_or(false);
+    if ok && ok_ext { name.to_string() } else { String::new() }
+}
+
+/// 清洗强调色：只接受 `#RRGGBB`（统一小写）；非法值 = 跟随主题。
+pub fn clean_accent(raw: &str) -> String {
+    let v = raw.trim();
+    if v.len() == 7 && v.starts_with('#') && v[1..].chars().all(|c| c.is_ascii_hexdigit()) {
+        v.to_ascii_lowercase()
+    } else {
+        String::new()
+    }
+}
+
+/// 界面不透明度下限 60：再低背景图会明显影响文字对比度。
+pub fn clean_opacity(v: i64) -> u8 {
+    v.clamp(60, 100) as u8
 }
 
 /// 规范化外设名字的键：`vid:pid` 或 `vid:pid@短指纹`，统一小写十六进制。
@@ -115,6 +150,9 @@ impl Default for Settings {
             unit_temperature: String::new(),
             unit_duration: String::new(),
             peripheral_names: BTreeMap::new(),
+            appearance_bg: String::new(),
+            appearance_accent: String::new(),
+            appearance_opacity: 94,
         }
     }
 }
@@ -184,6 +222,12 @@ impl Settings {
                 }
                 names
             },
+            appearance_bg: clean_bg_name(s("appearance.background").unwrap_or("")),
+            appearance_accent: clean_accent(s("appearance.accent").unwrap_or("")),
+            appearance_opacity: s("appearance.opacity")
+                .and_then(|v| v.parse::<i64>().ok())
+                .map(clean_opacity)
+                .unwrap_or(d.appearance_opacity),
         }
     }
 
@@ -222,7 +266,15 @@ impl Settings {
              capacity={}\n\
              rate={}\n\
              temperature={}\n\
-             duration={}\n",
+             duration={}\n\
+             \n\
+             [appearance]\n\
+             ; 用户背景图（exe 同级 ui/ 下的文件名；留空 = 纯色背景）\n\
+             background={}\n\
+             ; 强调色 #RRGGBB；留空 = 跟随主题默认色\n\
+             accent={}\n\
+             ; 界面不透明度 40–100（100 = 完全不透明）\n\
+             opacity={}\n",
             b(self.silent_start),
             b(self.logging),
             self.log_level,
@@ -236,6 +288,9 @@ impl Settings {
             self.unit_rate,
             self.unit_temperature,
             self.unit_duration,
+            self.appearance_bg,
+            self.appearance_accent,
+            self.appearance_opacity,
         );
         // 外设名字是动态条目（有几只外设就有几行），单独拼在最后；
         // 键一律小写十六进制，排序输出，手改时位置稳定。
@@ -440,6 +495,11 @@ fn patched(previous: &Settings, patch: &Value) -> Settings {
     s.unit_rate = t("unitRate", &s.unit_rate);
     s.unit_temperature = t("unitTemp", &s.unit_temperature);
     s.unit_duration = t("unitDuration", &s.unit_duration);
+    s.appearance_bg = clean_bg_name(&t("appearanceBg", &s.appearance_bg));
+    s.appearance_accent = clean_accent(&t("appearanceAccent", &s.appearance_accent));
+    if let Some(v) = patch.get("appearanceOpacity").and_then(|v| v.as_i64()) {
+        s.appearance_opacity = clean_opacity(v);
+    }
     // 外设名字表：整表替换（键会先规范化，非法键与非字符串值直接丢弃）。
     if let Some(obj) = patch.get("peripheralNames").and_then(|v| v.as_object()) {
         s.peripheral_names.clear();
@@ -475,6 +535,9 @@ pub fn to_json(s: &Settings) -> Value {
         "unitTemp": s.unit_temperature,
         "unitDuration": s.unit_duration,
         "peripheralNames": &s.peripheral_names,
+        "appearanceBg": s.appearance_bg,
+        "appearanceAccent": s.appearance_accent,
+        "appearanceOpacity": s.appearance_opacity,
     })
 }
 
@@ -506,6 +569,29 @@ mod tests {
             Settings::from_map(&parse("[app]\nlog_level=verbose\n")).log_level,
             "info"
         );
+    }
+
+    #[test]
+    fn appearance_round_trip_and_sanitizing() {
+        let s = Settings {
+            appearance_bg: "background.png".into(),
+            appearance_accent: "#10b981".into(),
+            appearance_opacity: 82,
+            ..Settings::default()
+        };
+        assert_eq!(Settings::from_map(&parse(&s.to_ini())), s);
+        assert_eq!(clean_accent("red"), "");
+        assert_eq!(clean_accent("#ABCDEF").as_str(), "#abcdef");
+        assert_eq!(clean_bg_name("../x.png"), "");
+        assert_eq!(clean_bg_name("background.PNG"), "background.PNG");
+        assert_eq!(clean_bg_name("background.png"), "background.png");
+        assert_eq!(clean_bg_name("bg.exe"), "");
+        assert_eq!(clean_opacity(10), 60);
+        assert_eq!(clean_opacity(101), 100);
+        let s = patched(&s, &json!({"appearanceOpacity": 20, "appearanceAccent": "#F97316"}));
+        assert_eq!(s.appearance_opacity, 60);
+        assert_eq!(s.appearance_accent, "#f97316");
+        assert_eq!(s.appearance_bg, "background.png");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 {
   "name": "jiadian-monitor",
   "private": true,
-  "version": "0.9.1",
+  "version": "0.9.5",
   "description": "把本机实时硬件数据通过 USB 推送到佳点（jiadian）V1P / V2 小屏设备的桌面监控程序",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
@@ -10,7 +10,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "test": "node --test scripts/render-session.test.mjs",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "gen:third-party": "node scripts/gen-third-party.mjs"
   },
   "dependencies": {
     "@iconify-icons/line-md": "^2.0.0",
@@ -18,11 +19,13 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "element-plus": "^2.14.8",
     "vue": "^3.5.13"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@vitejs/plugin-vue": "^6.0.7",
+    "axe-core": "^4.10.0",
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
     "vue-tsc": "^3.3.5"

@@ -7,6 +7,8 @@ export interface RenderState {
   open: boolean;
   ready: boolean;
   serial: string | null;
+  /** USB 链路失效后正在自动重连（后端 state 里的可选字段） */
+  reconnecting?: boolean;
 }
 export interface RenderView {
   state: RenderState | null;
@@ -193,7 +195,10 @@ export function createRenderSession(options: {
     return operation;
   }
   async function start(args: { html: string; serial: string | null; width: number; height: number }): Promise<boolean> {
-    if (disposed || !view().canStart) return false;
+    // 运行中“换主题”是后端支持的无感接管：prepare_start 会取消旧会话并复用/接管设备，
+    // 这里允许在 phase=running（且无 pending）时直接 start，不再强制先 stop。
+    const replaceable = known && state?.phase === "running" && !pending;
+    if (disposed || !(view().canStart || replaceable)) return false;
     const token = ++generation;
     const id = (options.requestId ?? newRequestId)();
     if (!id || id.length > 128) throw new Error("无效启动请求ID");

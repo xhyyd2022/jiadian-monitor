@@ -1,4 +1,5 @@
 mod api;
+mod appearance;
 mod assets;
 mod autostart;
 mod cpu_usage;
@@ -10,6 +11,7 @@ mod lhws_install;
 mod source_lhws;
 mod logging;
 mod metrics;
+mod online;
 mod peripherals;
 mod units;
 
@@ -290,15 +292,19 @@ async fn usb_list() -> Result<Vec<serde_json::Value>, String> {
 ///
 /// 物理枚举保证「没点连接也能看到设备」；GUI 那份顺带给出 `panelWidth/Height` 与
 /// `hardwareVariant`，**不用逐台开 USB 读 JED** 就能知道是 320×240 还是 320×170。
+/// 扫描设备：本地 WinUSB 物理枚举 + GUI `/usb/status` 的 `devices[]` 富化（尺寸 / 机型）。
+///
+/// `force = true`（界面上「刷新」按钮）：强制以物理枚举为准，
+/// 不再合并「GUI 认为还连着、但本地枚举不到」的幽灵设备；设备被拔掉后不会残留在列表里。
 #[tauri::command]
-async fn device_list() -> Result<Vec<serde_json::Value>, String> {
+async fn device_list(force: Option<bool>) -> Result<Vec<serde_json::Value>, String> {
     // 物理枚举要逐个开设备 + 问 GUI，都是阻塞调用 → 丢阻塞线程池，别占住 tokio worker
-    tauri::async_runtime::spawn_blocking(device_list_blocking)
+    tauri::async_runtime::spawn_blocking(move || device_list_blocking(force.unwrap_or(false)))
         .await
         .map_err(|e| format!("扫描设备失败：{e}"))?
 }
 
-pub(crate) fn device_list_blocking() -> Result<Vec<serde_json::Value>, String> {
+pub(crate) fn device_list_blocking(force: bool) -> Result<Vec<serde_json::Value>, String> {
     let phys = winusb::list_devices().unwrap_or_default();
     let gui_devs: Vec<serde_json::Value> = handoff::status()
         .ok()
@@ -337,27 +343,55 @@ pub(crate) fn device_list_blocking() -> Result<Vec<serde_json::Value>, String> {
             "connected": connected,
         }));
     }
-    // GUI 报告但本地没枚举到的（少见，兜底）
-    for d in &gui_devs {
-        let sn = d.get("serial").and_then(|s| s.as_str()).unwrap_or("");
-        if sn.is_empty()
-            || out.iter().any(|o| {
+    // GUI 报告但本地没枚举到的（少见，兜底）。
+    // 强制刷新时不合并这些「GUI 认为还连着、但物理枚举不到」的条目，
+    // 否则拔掉后残留的幽灵设备会一直卡在列表里；但**本程序正在接管的设备**必须保留
+    // （渲染中刷新时，WinUSB 句柄被管线占着，物理枚举可能读不到 SN）。
+    if force {
+        if let Some(sn) = pipeline::link_serial() {
+            if !out.iter().any(|o| {
                 o.get("serial")
                     .and_then(|s| s.as_str())
-                    .is_some_and(|x| x.eq_ignore_ascii_case(sn))
-            })
-        {
-            continue;
+                    .is_some_and(|x| x.eq_ignore_ascii_case(&sn))
+            }) {
+                let (w, h, variant, _connected) = enrich(find_gui(&sn));
+                out.push(json!({
+                    "serial": sn,
+                    "path": serde_json::Value::Null,
+                    "width": w,
+                    "height": h,
+                    "variant": variant,
+                    "connected": true,
+                }));
+            }
         }
-        let (w, h, variant, connected) = enrich(Some(d));
-        out.push(json!({
-            "serial": sn,
-            "path": serde_json::Value::Null,
-            "width": w,
-            "height": h,
-            "variant": variant,
-            "connected": connected,
-        }));
+        crate::logging::info(&format!(
+            "强制重新枚举：物理 {} 台，GUI {} 台（不合并 GUI 独有条目）",
+            phys.len(),
+            gui_devs.len()
+        ));
+    } else {
+        for d in &gui_devs {
+            let sn = d.get("serial").and_then(|s| s.as_str()).unwrap_or("");
+            if sn.is_empty()
+                || out.iter().any(|o| {
+                    o.get("serial")
+                        .and_then(|s| s.as_str())
+                        .is_some_and(|x| x.eq_ignore_ascii_case(sn))
+                })
+            {
+                continue;
+            }
+            let (w, h, variant, connected) = enrich(Some(d));
+            out.push(json!({
+                "serial": sn,
+                "path": serde_json::Value::Null,
+                "width": w,
+                "height": h,
+                "variant": variant,
+                "connected": connected,
+            }));
+        }
     }
     Ok(out)
 }
@@ -495,10 +529,64 @@ fn assets_dir() -> Option<String> {
     assets::dir().map(|p| p.to_string_lossy().to_string())
 }
 
+/// 导入用户背景图：复制到 exe 同级 `ui/background.<ext>`，返回文件名（前端写进 settings）。
+#[tauri::command]
+fn appearance_import_bg(path: String) -> Result<String, String> {
+    appearance::import(&path)
+}
+
+/// 读取外观设置里记录的背景图字节；前端转 Blob URL 显示，不暴露文件系统路径。
+#[tauri::command]
+fn appearance_bg_bytes(name: String) -> Result<Option<Vec<u8>>, String> {
+    appearance::read(&name)
+}
+
+/// 清除背景图文件（设置项由前端通过 settings_set 清空）。
+#[tauri::command]
+fn appearance_clear_bg() -> Result<(), String> {
+    appearance::clear()
+}
+
 /// 手动导入：把选中的 HTML（连同同目录图片）整理成主题文件夹，返回落位后的主题。
 #[tauri::command]
 fn import_panel(src: String) -> Result<assets::Theme, String> {
     assets::import(&src)
+}
+
+/// 在线素材列表：`online/*.toml`（一条 = 一个在线页面）。字段为 snake_case。
+#[tauri::command]
+fn online_list() -> Result<Vec<online::OnlineSource>, String> {
+    online::list()
+}
+
+/// 在线素材保存（`id = None` 新建；否则覆盖）。返回落盘后的完整对象。
+#[tauri::command]
+fn online_save(
+    id: Option<String>,
+    title: String,
+    description: String,
+    url_v1p: String,
+    url_v2: String,
+) -> Result<online::OnlineSource, String> {
+    online::save(id, title, description, url_v1p, url_v2)
+}
+
+#[tauri::command]
+fn online_delete(id: String) -> Result<(), String> {
+    online::delete(id)
+}
+
+/// `online/` 的相对标签（界面显示用，不暴露本机绝对路径）。
+#[tauri::command]
+fn online_dir() -> Result<String, String> {
+    online::dir_label_string()
+}
+
+/// 在资源管理器里打开 `online/`（缺失时自动创建）。
+#[tauri::command]
+fn online_open_dir() -> Result<(), String> {
+    let p = online::ensure_dir()?;
+    tauri_plugin_opener::open_path(p, None::<&str>).map_err(|e| e.to_string())
 }
 
 /// 外设（鼠标 / 键盘 / 耳机）的品牌、型号、电量。协议来自 exe 同级 `peripherals/` 下的 JSON。
@@ -872,6 +960,14 @@ pub fn run() {
             link_state,
             assets_dir,
             import_panel,
+            appearance_import_bg,
+            appearance_bg_bytes,
+            appearance_clear_bg,
+            online_list,
+            online_save,
+            online_delete,
+            online_dir,
+            online_open_dir,
             peripherals_state,
             peripherals_refresh,
             peripherals_rename,

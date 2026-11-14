@@ -1884,7 +1884,7 @@ dependencies = [
 
 [[package]]
 name = "jiadian-monitor"
-version = "0.9.1"
+version = "0.9.5"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
@@ -1897,6 +1897,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tokio",
  "tokio-tungstenite",
+ "toml 1.1.8+spec-1.1.0",
  "ureq",
  "windows-sys 0.61.2",
 ]

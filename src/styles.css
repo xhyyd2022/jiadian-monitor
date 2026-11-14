@@ -1,84 +1,154 @@
-/* ---------------- 主题变量 ----------------
-   **挂在 :root 而不是 .app 上**，三个原因：
-   ① `html` / `body` 也拿得到 `--bg`：首帧、窗口 resize、内容不满一屏时不会先露一层白底；
-   ② `color-scheme` 跟着 `:root.light` 走 —— 挂在 `.app` 上时 `<html>` 永远停在 dark，
-      `<select>` 的原生下拉列表 / 焦点环由 UA 按 color-scheme 绘制，就会「慢一拍」；
-   ③ 切换主题只改 `html.light` 一个 class，不必让整棵组件树重新匹配。
-   深色是默认（不带 class），浅色靠 `html.light`。 */
+/* ============================================================
+   佳点监控 · UI 设计系统（Element Plus）
+   固定 780×540 逻辑窗口；深色为默认，:root.light 切浅色。
+   ============================================================ */
+
 :root {
   color-scheme: dark;
-  /* 深色（默认） */
-  --bg: #14161a;
-  --side: #101216;
-  --panel: #1a1e24;
-  --line: #2a2f37;
-  --fg: #e5e7eb;
-  --sub: #9ca3af;
-  --title: #93c5fd;
-  --accent: #38bdf8;
-  --btn: #1e2530;
-  --btn-hover: #262e3b;
+  --bg: #11151c;
+  --side: #141a22;
+  --panel: #1c2430;
+  --line: #344155;
+  --fg: #f1f5f9;
+  --sub: #bac5d3;
+  /* 卡片/弹窗标题走中性色：强调色只留给选中、主操作与链接（评审 G01） */
+  --title: #f1f5f9;
+  --accent: #619aff;
+  --on-accent: #0b1220;
+  --btn: #242e3d;
+  --btn-hover: #2d3a4b;
   --danger: #f87171;
   --ok: #34d399;
   --warn: #fbbf24;
-  /* 圆角统一三档：小标签 / 控件 / 容器；圆形与胶囊另算（50% / 999px） */
-  --r-xs: 4px;
+
+  /* 外观设置会覆盖这三个变量 */
+  --ui-alpha: 0.94;
+  --app-bg-image: none;
+  --app-bg-veil: 0.18;
+
+  /* 统一形状：控件 6 / 卡片 8 / 浮层 10（评审 G02 建议的一套尺度） */
+  --r-ctl: 6px;
+  --r-card: 8px;
+  --r-pop: 10px;
   --r-sm: 6px;
-  --r-md: 10px;
+  /* 留白尺度：4/6/8/10/12/16；用间距而不是缩小字号来控制密度 */
+  --sp-1: 4px;
+  --sp-2: 6px;
+  --sp-3: 8px;
+  --sp-4: 10px;
+  --sp-5: 12px;
+  --sp-6: 16px;
+
+  /* Element Plus 主题映射 */
+  --el-color-primary: var(--accent);
+  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, var(--bg));
+  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, var(--bg));
+  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, var(--bg));
+  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 20%, var(--bg));
+  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  --el-color-primary-dark-2: color-mix(in srgb, var(--accent) 80%, #000);
+  --el-color-success: var(--ok);
+  --el-color-warning: var(--warn);
+  --el-color-danger: var(--danger);
+  --el-bg-color: var(--panel);
+  --el-bg-color-page: var(--bg);
+  --el-bg-color-overlay: var(--panel);
+  --el-fill-color-blank: var(--panel);
+  --el-fill-color-light: var(--btn);
+  --el-fill-color-lighter: color-mix(in srgb, var(--btn) 55%, transparent);
+  --el-border-color: var(--line);
+  --el-border-color-light: var(--line);
+  --el-border-color-lighter: var(--line);
+  --el-text-color-primary: var(--fg);
+  --el-text-color-regular: var(--fg);
+  --el-text-color-secondary: var(--sub);
+  --el-text-color-placeholder: var(--sub);
+  --el-border-radius-base: var(--r-ctl);
+  --el-border-radius-small: var(--r-sm);
+  --el-font-size-base: 12px;
+  --el-component-size: 30px;
+  --el-component-size-small: 28px;
+  --el-mask-color: rgba(0, 0, 0, 0.55);
 }
+
 :root.light {
   color-scheme: light;
-  --bg: #f4f6f8;
-  --side: #ffffff;
+  --bg: #f4f6f9;
+  --side: #fbfcfe;
   --panel: #ffffff;
-  --line: #e4e8ee;
-  --fg: #1f2430;
-  --sub: #6b7280;
-  --title: #2563eb;
+  --line: #dce2ea;
+  --fg: #202733;
+  --sub: #596579;
+  --title: #202733;
   --accent: #2563eb;
-  --btn: #eef2f7;
-  --btn-hover: #e2e8f0;
+  --on-accent: #ffffff;
+  --btn: #f1f4f8;
+  --btn-hover: #e6ebf2;
   --danger: #dc2626;
   --ok: #059669;
   --warn: #d97706;
+  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, #fff);
+  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, #fff);
+  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, #fff);
+  --el-color-primary-light-8: color-mix(in srgb, var(--accent) 20%, #fff);
+  --el-color-primary-light-9: color-mix(in srgb, var(--accent) 10%, #fff);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--accent) 80%, #000);
+  --el-color-danger: var(--danger);
+  --el-bg-color: var(--panel);
+  --el-bg-color-page: var(--bg);
+  --el-bg-color-overlay: var(--panel);
+  --el-fill-color-blank: #fff;
+  --el-fill-color-light: var(--btn);
+  --el-fill-color-lighter: color-mix(in srgb, var(--btn) 55%, transparent);
+  --el-border-color: var(--line);
+  --el-border-color-light: var(--line);
+  --el-border-color-lighter: var(--line);
+  --el-text-color-primary: var(--fg);
+  --el-text-color-regular: var(--fg);
+  --el-text-color-secondary: var(--sub);
+  --el-text-color-placeholder: var(--sub);
 }
-/* 主题切换的那一帧：**禁用所有过渡**。
-   不加这个，`button`（0.12s）和开关（0.15s）会渐变过去，而背景 / 卡片 / 文字
-   是瞬间变的 —— 视觉上就是「整体先变、按钮慢半拍」。尤其是刚点下去的那个按钮
-   自己还在渐变，最容易被察觉。用 !important 是因为 button / .sw input 的
-   transition 是给 hover 用的，这里必须压过它们。 */
-html.theme-switching *,
-html.theme-switching *::before,
-html.theme-switching *::after {
-  transition: none !important;
+
+* {
+  box-sizing: border-box;
 }
-/* ---------------- 原生控件归一化 ----------------
-   原则：**界面上的每一个像素都由本文件决定**，不依赖浏览器（WebView2 / Chromium）
-   的默认外观。这里只做「归零」——外观（背景/边框/圆角/配色）仍在下面各自的类里给，
-   以免写死一套样式把主题变量挡住。
-   为什么必须在 `html` 之前：后面的规则靠同权重后者胜出，归一化一经写死就没法被覆盖。 */
-/* 表单控件默认用 UA 的系统字体（Arial / 微软雅黑），不跟随 .app 的字体栈 ——
-   只继承字族，**不动 font-size**（UA 给按钮的是 13.33px，统一成 16px 会让界面整体变大）。 */
+
+/* 全局隐藏滚动条：只隐藏视觉条，滚轮/触控/键盘滚动照常。
+   （Windows 上保留滚动条会占 6~16px，并且不同页面宽度/对齐不一致） */
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+*::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+.el-scrollbar__bar {
+  display: none !important;
+}
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+    system-ui, sans-serif;
+  font-size: 12px;
+  overflow: hidden;
+  user-select: none;
+}
 button,
 input,
 select,
 textarea,
 option {
   font-family: inherit;
-  /* 表单控件默认 content-box，给了 width 再配 padding 就会超出预期宽度 */
-  box-sizing: border-box;
 }
-/* 焦点环：默认由 UA 画（浅蓝细线，深色主题下几乎看不见）。统一成主题强调色。
-   `:focus-visible` 只在键盘导航时出现，鼠标点击不画环，避免点击后留一圈。 */
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-:focus:not(:focus-visible) {
-  outline: none;
-}
-/* 链接：全局接管，不留 UA 默认的蓝色 + 下划线（深色主题下那种蓝几乎看不清）。
-   本程序的链接都是 `<a @click>` 无 href 的按钮式链接，所以只有 hover 才加下划线。 */
 a {
   color: var(--accent);
   text-decoration: none;
@@ -87,695 +157,795 @@ a {
 a:hover {
   text-decoration: underline;
 }
-/* 段落：UA 默认上下各 1em 外边距，放在卡片里会把行距撑到不一致。间距一律由容器给。 */
-p {
-  margin: 0;
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
-/* 图片：UA 默认 inline 会在下方留基线空隙（约 3px），让整块高度算不准。 */
-img {
-  display: block;
-  max-width: 100%;
+:focus:not(:focus-visible) {
+  outline: none;
 }
-/* 标题：只做归零。字号由各场景给；字重显式写成 700（UA 的「bold」不可依赖，
-   而且 700 就是现在实际渲染出来的效果，改了反而会变细）。 */
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
-  margin: 0;
-  font-weight: 700;
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  transition: none !important;
 }
-/* 列表：UA 默认给 padding-left 40px + 圆点，本程序的列表都用 .card ul / .steps 自绘。 */
-ul,
-ol {
-  margin: 0;
-  padding: 0;
-}
-/* 下拉列表项：Windows 上 Chromium 用系统白底画 option，深色主题里会突然闪一块白。
-   显式给色后由 color-scheme + 这两个属性共同决定。 */
-option {
-  background: var(--btn);
-  color: var(--fg);
-}
-/* 选中文本：UA 默认是天蓝底白字，与主题无关。只在可复制的区域（代码 / 提示）出现。 */
-::selection {
-  background: var(--accent);
-  color: #fff;
-}
-html {
-  background: var(--bg);
-}
-body {
-  margin: 0;
-  /* 跟着主题走：WebView2 首帧 / 窗口拉伸时不会先露一层白 */
-  background: var(--bg);
-  color: var(--fg);
-  /* 全局禁止选中/复制 */
-  user-select: none;
-  -webkit-user-select: none;
-  cursor: default;
-}
+
+/* ---------------- 窗口 / 标题栏 / 侧栏 ---------------- */
 .app {
-  display: flex;
-  flex-direction: column;
+  position: relative;
   height: 100vh;
-  background: var(--bg);
-  color: var(--fg);
-  font-family: "Segoe UI", system-ui, sans-serif;
+  overflow: hidden;
 }
-/* 自定义标题栏（原生标题栏已隐藏） */
+.app-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-color: var(--bg);
+  background-image: var(--app-bg-image);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+.app-bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  opacity: calc(var(--app-bg-veil) + 0.06);
+  pointer-events: none;
+}
+.titlebar,
+.shell {
+  position: relative;
+  z-index: 1;
+}
 .titlebar {
-  flex: none;
-  height: 34px;
+  height: 32px;
+  /* 触控屏上让标题栏自己处理拖拽手势，避免被 WebView2 当作滚动/缩放手势吃掉 */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 0 6px 0 12px;
-  background: var(--side);
   border-bottom: 1px solid var(--line);
-  user-select: none;
+  background: color-mix(in srgb, var(--side) calc(var(--ui-alpha) * 100%), transparent);
+  backdrop-filter: blur(14px);
 }
-.tb-title {
-  font-size: 12px;
+.tb-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.tb-logo {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 5px;
+}
+.tb-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.tb-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+.tb-ver {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
   color: var(--sub);
-  letter-spacing: 0.3px;
+  font-size: 10px;
 }
 .tb-btns {
-  margin-left: auto;
   display: flex;
+  align-items: center;
   gap: 2px;
 }
 .tb-btn {
-  width: 34px;
+  width: 32px;
   height: 26px;
-  padding: 0;
-  background: transparent;
+  display: grid;
+  place-items: center;
   border: none;
-  border-radius: var(--r-sm);
+  border-radius: 6px;
+  background: transparent;
   color: var(--sub);
   cursor: pointer;
-}
-.tb-btn svg {
-  font-size: 15px;
 }
 .tb-btn:hover {
   background: var(--btn-hover);
   color: var(--fg);
 }
 .tb-close:hover {
-  background: var(--danger);
+  background: #e5484d;
   color: #fff;
 }
-.main {
-  flex: 1;
-  min-height: 0;
+.shell {
   display: flex;
-}
-/* 全局隐藏滚动条，但保留滚动能力 */
-* {
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-*::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-  display: none;
+  height: calc(100% - 34px);
+  min-height: 0;
 }
 .side {
-  width: 58px;
+  width: 60px;
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 8px 6px;
-  background: var(--side);
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px 8px;
   border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--side) calc(var(--ui-alpha) * 100%), transparent);
+  backdrop-filter: blur(14px);
 }
-.side button {
+.side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+.side-btn {
+  position: relative;
+  width: 100%;
+  height: 50px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 2px;
-  padding: 8px 2px;
-  background: transparent;
   border: none;
-  border-radius: var(--r-sm);
+  border-radius: 10px;
+  background: transparent;
   color: var(--sub);
   font-size: 11px;
   cursor: pointer;
+  transition: background 0.12s, color 0.12s;
 }
-.side button svg {
+.side-btn svg {
   font-size: 18px;
 }
-.side button.on {
+.side-btn:hover {
   background: var(--btn);
   color: var(--fg);
 }
-.side .theme {
+.side-btn.on {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: color-mix(in srgb, var(--accent) 72%, var(--fg));
+}
+.side-btn .side-ind {
+  position: absolute;
+  left: -4px;
+  top: 15px;
+  width: 3px;
+  height: 20px;
+  border-radius: 0 3px 3px 0;
+  background: transparent;
+}
+.side-btn.on .side-ind {
+  background: var(--accent);
+}
+.side-theme {
   margin-top: auto;
+  height: 44px;
 }
-.body {
-  flex: 1;
-  overflow: auto;
-  padding: 12px 14px;
-}
-.cols {
-  display: flex;
-  gap: 12px;
-  align-items: stretch;
-  /* 铺满可用高度：卡片纵向拉伸，内容始终与底边框保持固定边距（修底部留白） */
-  min-height: 100%;
-}
-.col {
+
+/* ---------------- 工作区 / 顶部细导航 ---------------- */
+.workspace {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  gap: 0;
+  /* 上下留白与卡片间距统一为 12px，视觉节奏一致 */
+  padding: 12px 16px 12px;
 }
-/* 左列固定宽度（贴合设备信息内容），右列容纳 320 预览 */
-.col:first-child {
-  flex: 0 0 300px;
-}
-/* 每列最后一张卡撑满 → 两列底部对齐 */
-.col > .card:last-child {
-  flex: 1;
-}
-/* 右列随窗口自适应加宽（≥352）——内容始终与右边框保持固定边距，不留空白带 */
-.col.right {
-  flex: 1 1 auto;
-  min-width: 352px;
-}
-.card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  padding: 10px 12px;
-  margin-bottom: 12px;
-}
-.card h2 {
+.topbar {
+  height: 26px;
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  margin: 0 0 8px;
-  color: var(--title);
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding-right: 6px;
+}
+.el-breadcrumb {
+  font-size: 11.5px;
+  line-height: 1;
   white-space: nowrap;
 }
-/* 卡片标题里的纯文字（如「设备」）：不参与压缩，避免被下拉/按钮挤到换行 */
-.card h2 .ttl {
-  flex: none;
-}
-.card h2 svg {
-  font-size: 16px;
-}
-.state {
-  color: var(--sub);
+.el-breadcrumb__separator {
+  margin: 0 5px !important;
+  color: var(--sub) !important;
   font-weight: 400;
 }
+.crumb {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--sub);
+  font-size: 12px;
+  cursor: pointer;
+}
+.crumb:hover {
+  color: var(--fg);
+}
+.crumb.current {
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+  cursor: default;
+}
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--sub);
+  font-size: 11px;
+}
+.conn-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sub);
+}
+.conn-dot.ok {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 16%, transparent);
+}
+.conn-text {
+  color: var(--fg);
+}
+.topbar-sn {
+  color: var(--sub);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2px;
+}
+.view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  /* 滚动条已全局隐藏，不再预留 gutter；六页内容宽度自然一致 */
+  scrollbar-gutter: auto;
+}
+.err {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  font-size: 11.5px;
+}
+
+/* ---------------- 页面通用 ---------------- */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.page.home {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+.home-col {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.home-col > .el-card {
+  margin: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.home-col > .dev-card,
+.home-col > .themed {
+  flex: 0 0 auto;
+}
+.home-col > .display-card,
+.home-col > .preview-card {
+  flex: 1 1 0;
+}
+.hint {
+  margin: var(--sp-1) 0 0;
+  color: var(--sub);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.hint.keep {
+  min-height: 15px;
+}
+.hint.bad {
+  color: var(--danger);
+}
+.off {
+  color: var(--sub);
+}
 .dot {
-  width: 8px;
-  height: 8px;
+  flex: none;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--sub);
 }
 .dot.ok {
   background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 16%, transparent);
 }
-/* 装好了但没在跑（可一键「重新启动」修好） */
-.dot.warn {
-  background: var(--warn);
+
+/* 文本输入框允许选择/复制/粘贴（全局禁用了正文选中，这里显式放开） */
+input,
+textarea,
+[contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
 }
-/* 未安装 */
-.dot.off {
-  background: var(--sub);
-  opacity: 0.45;
+
+/* 浅色下 danger plain 按钮（如「停止」）默认 #dc2626 在 #fef0f0 上只有 4.35:1 */
+:root.light .el-button--danger.is-plain {
+  --el-button-text-color: #b42318;
+  --el-button-hover-text-color: #b42318;
+  --el-button-active-text-color: #b42318;
 }
-/* 读失败（外设卡片：协议对不上 / 设备不回应） */
-.dot.bad {
-  background: var(--danger);
+
+/* tooltip 只做展示，不参与点击命中：避免快速移动/连点时提示浮层挡住旁边的按钮。
+   注意：Element Plus 的 el-select 下拉 popper 同样带 role="tooltip" 和 el-tooltip 类，
+   必须排除，否则下拉面板 pointer-events:none，表现为“展开了但选项点不了”。 */
+.el-popper[role="tooltip"]:not(.el-select__popper):not(.el-dropdown__popper):not(.el-cascader__dropdown) {
+  pointer-events: none;
 }
-.mini {
-  margin-left: auto;
-  display: inline-flex;
+
+/* ---------------- Element Plus 统一尺寸 ---------------- */
+.el-button {
+  --el-button-size: 28px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--r-ctl);
+  font-size: 12px;
+}
+.el-button--primary {
+  --el-button-text-color: var(--on-accent);
+  --el-button-hover-text-color: var(--on-accent);
+  --el-button-active-text-color: var(--on-accent);
+}
+.el-button + .el-button {
+  margin-left: 0;
+}
+.el-button .el-icon,
+.el-button svg {
+  font-size: 13px;
+}
+.actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+.actions .el-button {
+  flex: 1;
+  min-width: 0;
+}
+.actions.three .el-button {
+  padding: 0 6px;
+}
+.field {
+  display: flex;
   align-items: center;
-  gap: 3px;
+  gap: var(--sp-3);
+  min-height: 28px;
+  font-size: 12px;
+}
+.field-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sub);
+}
+.field-label svg {
+  font-size: 13px;
+}
+.field .el-slider {
+  flex: 0 0 44%;
+  margin: 0 4px;
+}
+.field .rowsel {
+  width: 76px;
+  flex: none;
+}
+.wide {
+  width: 100%;
+  margin-bottom: 6px;
+}
+.el-select {
+  --el-select-border-color-hover: var(--accent);
+}
+.el-select__wrapper {
+  min-height: 28px;
   padding: 2px 8px;
+  border-radius: var(--r-ctl);
+  background: var(--btn);
+  box-shadow: 0 0 0 1px var(--line) inset;
+  font-size: 12px;
+}
+.el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.el-select__placeholder {
+  color: var(--sub);
+}
+.el-popper.is-light {
+  border: 1px solid var(--line);
+  border-radius: var(--r-pop);
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+}
+.el-select-dropdown__item {
+  height: 28px;
+  line-height: 28px;
+  border-radius: var(--r-sm);
+  margin: 1px 6px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.el-select-dropdown__item.is-selected {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.el-input__wrapper {
+  min-height: 28px;
+  border-radius: var(--r-ctl);
+  background: var(--btn);
+  box-shadow: 0 0 0 1px var(--line) inset;
+}
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.el-textarea__inner {
+  border-radius: var(--r-ctl);
+  background: var(--btn);
+  box-shadow: 0 0 0 1px var(--line) inset;
+  font-size: 12px;
+}
+.el-slider {
+  --el-slider-height: 4px;
+  --el-slider-button-size: 14px;
+}
+.el-switch {
+  --el-switch-on-color: var(--accent);
+  --el-switch-off-color: var(--btn-hover);
+}
+.el-tag {
+  --el-tag-border-radius: 999px;
+  height: 20px;
   font-size: 11px;
 }
-/* 设备切换下拉：贴右，紧挨「刷新」按钮（只显示 SN 尾号 + 机型）
-   **宽度必须固定**：`max-width` 会让框随选中项文本（「无设备」/「4C18CF · V1P」）伸缩，
-   刷新设备时整行跟着左右抖动。 */
-.devsel {
-  margin-left: auto;
+/* 浅色下 EP plain tag 的默认文字色对比度不足（10.5px 需要 ≥4.5:1），统一压深一档 */
+:root.light .el-tag--info {
+  --el-tag-text-color: #475467;
+  --el-tag-bg-color: #f2f4f7;
+  --el-tag-border-color: #d0d5dd;
+}
+:root.light .el-tag--success {
+  --el-tag-text-color: #047857;
+  --el-tag-bg-color: #ecfdf3;
+  --el-tag-border-color: #a7f3d0;
+}
+:root.light .el-tag--warning {
+  --el-tag-text-color: #92400e;
+  --el-tag-bg-color: #fffaeb;
+  --el-tag-border-color: #fedf89;
+}
+:root.light .el-tag--danger {
+  --el-tag-text-color: #b42318;
+  --el-tag-bg-color: #fef3f2;
+  --el-tag-border-color: #fecdca;
+}
+.el-card {
+  --el-card-border-color: var(--line);
+  --el-card-border-radius: var(--r-card);
+  --el-card-padding: 8px 10px;
+  background: color-mix(in srgb, var(--panel) calc(var(--ui-alpha) * 100%), transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 12%, transparent);
+  backdrop-filter: blur(10px) saturate(1.05);
+  overflow: hidden;
+}
+.el-card__header {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+}
+.el-card__body {
+  padding: 9px 12px 10px;
+}
+.el-dialog {
+  --el-dialog-bg-color: var(--panel);
+  --el-dialog-padding-primary: 14px;
+  border-radius: var(--r-pop);
+  border: 1px solid var(--line);
+}
+.el-dialog__header {
+  padding-bottom: 8px;
+  margin-right: 0;
+  border-bottom: 1px solid var(--line);
+}
+.el-dialog__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.el-dialog__body {
+  padding-top: 10px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.el-dialog__footer {
+  padding-top: 10px;
+}
+.el-overlay {
+  backdrop-filter: blur(3px);
+}
+.el-message {
+  border-radius: var(--r-ctl);
+}
+
+/* ---------------- 首页 ---------------- */
+.home-col > .el-card > .el-card__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.panel-title svg {
+  color: var(--sub);
+  font-size: 15px;
+}
+.panel-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dev-card .panel-head .devsel {
   width: 122px;
   flex: none;
-  min-width: 0; /* 允许压缩，别把标题挤换行 */
-  padding: 2px 6px;
-  font-size: 11px;
+  margin-left: auto;
+  margin-right: 2px;
 }
-.devsel + .mini {
-  margin-left: 6px;
+.dev-card .refresh-btn {
+  padding: 0 4px;
+  color: var(--sub);
 }
-.row {
+.dev-card .refresh-btn:hover {
+  color: var(--accent);
+}
+.dev-card .hint {
+  padding: 0 2px;
+}
+.meta {
   display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 5px 0;
-  border-bottom: 1px solid var(--line);
-  font-size: 12px;
+  flex-direction: column;
+  margin-top: var(--sp-1);
 }
-.row:last-of-type {
+.meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  height: 22px;
+  font-size: 11.5px;
+  border-bottom: 1px dashed color-mix(in srgb, var(--line) 55%, transparent);
+}
+.meta-row:last-child {
   border-bottom: none;
 }
-.row > svg {
-  color: var(--sub);
-  font-size: 15px;
-  flex: none;
-}
-.lbl {
-  flex: 1;
-  color: var(--fg);
-  min-width: 0;
-}
-.val {
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  word-break: break-all;
-  color: var(--fg);
-}
-.val.off {
-  color: var(--sub);
-}
-/* 外设电量：充足 / 偏低 / 快没电，沿用状态色 */
-.val.ok {
-  color: var(--ok);
-}
-.val.warn {
-  color: var(--warn);
-}
-.val.bad {
-  color: var(--danger);
-}
-/* 外设行：名字后面的实例短指纹（同型号多台时用来区分），以及「休眠中」小标签 */
-.inst {
-  color: var(--sub);
-  font-size: 11px;
-  margin-left: 2px;
-  font-variant-numeric: tabular-nums;
-}
-.row .tag {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 0 4px;
-  border-radius: var(--r-sm);
-  background: var(--btn);
-  color: var(--sub);
-  font-size: 10.5px;
-  line-height: 16px;
-}
-/* 改名输入框：占住名称那一列，别把电量挤走 */
-.row input.rename {
-  flex: 1;
-  min-width: 0;
-  padding: 2px 6px;
-  font-size: 12px;
-  background: var(--btn);
-  color: var(--fg);
-  border: 1px solid var(--accent);
-  border-radius: var(--r-sm);
-  outline: none;
-}
-.row .mini {
-  flex: none;
-  margin: 0;
-}
-/* 图标按钮：只放一支笔，尺寸跟行高对齐 */
-.row .mini.icon {
-  padding: 2px 5px;
-  font-size: 15px;
-  line-height: 1;
-}
-.row .mini.icon svg {
-  display: block;
-}
-select {
-  background: var(--btn);
-  color: var(--fg);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  padding: 3px 6px;
-}
-/* 简洁滑杆：统一轨道 + 圆点，不留「填不满的空块」 */
-.rng {
-  flex: 0 0 52%;
-  -webkit-appearance: none;
-  appearance: none;
-  height: 18px;
-  background: transparent;
-  margin: 0;
-}
-.rng::-webkit-slider-runnable-track {
-  height: 6px;
-  border-radius: 999px;
-  background: var(--btn-hover);
-}
-.rng::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 14px;
-  height: 14px;
-  margin-top: -4px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-.hint.none {
-  opacity: 0.5;
-}
-/* ---- 下载 / 安装进度（一键安装 LibreHardwareService）----
-   自绘，不用 <progress>（原生 progress 各浏览器外观不一致，也不好上主题色）。
-   总大小未知时没有内联 width，靠 .prog-bar.indet 的不确定态动画。 */
-.prog {
-  margin: 8px 0 4px;
-}
-.prog-head {
+.meta-row .lbl {
   display: flex;
-  align-items: baseline;
-  gap: 6px;
-  font-size: 11.5px;
+  align-items: center;
+  gap: 5px;
+  flex: none;
   color: var(--sub);
-  margin-bottom: 4px;
 }
-.prog-head .grow {
-  flex: 1;
+.meta-row .lbl svg {
+  font-size: 12px;
+}
+.meta-row .val {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.prog-track {
-  position: relative;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--btn);
-  overflow: hidden;
-}
-.prog-bar {
-  position: absolute;
-  left: 0;
-  top: 0;
-  height: 100%;
-  border-radius: 999px;
-  background: var(--accent);
-  transition: width 0.3s ease-out;
-}
-.prog-bar.fail {
-  background: var(--danger);
-}
-.prog-bar.indet {
-  width: 34%;
-  animation: prog-slide 1.15s ease-in-out infinite;
-}
-@keyframes prog-slide {
-  0% {
-    left: -34%;
-  }
-  100% {
-    left: 100%;
-  }
-}
-html.theme-switching .prog-bar,
-html.theme-switching .prog-bar.indet {
-  animation: none;
-  transition: none;
-}
-.wide {
-  width: 100%;
-}
-.btns {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
-  margin: 8px 0 4px;
-}
-.btns.two {
-  grid-template-columns: repeat(2, 1fr);
-}
-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 5px 10px;
-  background: var(--btn);
   color: var(--fg);
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  min-width: 0;
-  transition: background 0.12s, color 0.12s;
-}
-button:hover:not(:disabled) {
-  background: var(--btn-hover);
-}
-button:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-button.primary {
-  background: var(--accent);
-  color: #fff;
-}
-button.danger {
-  color: var(--danger);
-}
-/* 裸 <p class="err">（不带 .hint）也要有上间距：`p` 的 UA 外边距已在上面的归一化里清零 */
-.err {
-  color: var(--danger);
-  margin-top: 6px;
-}
-.hint {
-  color: var(--sub);
-  font-size: 11.5px;
-  margin: 6px 0 0;
-  line-height: 1.75;
-  /* 只在整段放不下时才断，不拆散词语；长路径仍能自动折行 */
-  overflow-wrap: anywhere;
-  word-break: normal;
-}
-/* 会**反复出现/消失**的提示（设备状态、下发结果）：预留一行高度。
-   否则提示一来一去，整张卡高度跳一下，左列最后一张卡（flex:1）跟着伸缩 → 界面抖动。 */
-.hint.keep {
-  min-height: 20px;
-}
-/* 设置页顶部「正在保存 / 保存失败」常驻一行：v-if 的 span 在，容器就得先占好高度，
-   否则每次点开关都先塌 0 再撑回 20px，整页设置项跟着上下跳一下。 */
-.savebar {
-  min-height: 20px;
-  display: flex;
-  align-items: center;
-}
-.savebar .hint,
-.savebar .err {
-  margin: 0;
-}
-.preview img,
-.preview canvas {
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  image-rendering: pixelated;
-}
-.ph {
-  /* 实际宽高由模板内联 style 给出（= 设备尺寸）；这里只是 CSS 兜底 */
-  width: 320px;
-  height: 240px;
-  max-width: 100%;
-  max-height: 100%;
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px dashed var(--line);
-  border-radius: var(--r-sm);
-  color: var(--sub);
-  font-size: 13px;
-}
-.card ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-/* 只作用于 <ul> 指标行；<ol> 步骤表有独立规则（旧的 .card li 会把 display:flex
-   泄漏给步骤表的 <li>，把 <code> 块级化 → 标签被挤到行尾、断行错乱） */
-.card ul > li {
-  display: flex;
-  gap: 10px;
-  padding: 5px 0;
-  border-bottom: 1px solid var(--line);
-  font-size: 13px;
-}
-.card ul > li:last-child {
-  border-bottom: none;
-}
-/* 行内代码标签：与正文同基线、不换行，长标签不被拆开 */
-code {
-  display: inline;
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 0.94em;
-  line-height: 1.2;
-  background: var(--btn);
-  color: var(--fg);
-  padding: 1px 5px;
-  border-radius: var(--r-xs);
-  white-space: nowrap;
-  vertical-align: baseline;
-}
-.sw {
-  display: inline-flex;
-  gap: 8px;
-  align-items: center;
-  color: var(--sub);
-  font-size: 12px;
-  cursor: pointer;
-  user-select: none;
-}
-/* 真正的左右开关 */
-.sw input {
-  appearance: none;
-  -webkit-appearance: none;
-  flex: none;
-  width: 36px;
-  height: 20px;
-  margin: 0;
-  border-radius: 999px;
-  background: var(--btn-hover);
-  position: relative;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.sw input::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-  transition: transform 0.15s;
-}
-.sw input:checked {
-  background: var(--accent);
-}
-.sw input:checked::after {
-  transform: translateX(16px);
-}
-/* 内容区按钮统一宽度，视觉整齐 */
-.body button {
-  min-width: 72px;
-}
-/* 设置页下拉统一宽度，视觉整齐 */
-.row select {
-  width: 76px;
-  flex: none;
-}
-/* 单位设置的下拉要放得下「手动指定」/「跟随素材」四个汉字 */
-.card.unit .row select {
-  width: 96px;
-}
-/* 日志级别下拉要放得下「警告及以上」五个汉字（76px 会把它裁掉）；
-   固定宽度也避免切换级别时整行左右伸缩 */
-.row select.lv {
-  width: 108px;
-}
-/* 素材页 */
-.steps {
-  margin: 0;
-  padding-left: 21px;
-  color: var(--sub);
-  font-size: 12.5px;
-  line-height: 1.75;
-}
-.steps li {
-  padding: 3px 0 3px 2px;
-  /* 尽量避免行尾只剩一两个字（Chromium 117+；不支持也只是退化为普通断行） */
-  text-wrap: pretty;
-}
-.steps li::marker {
-  color: var(--title);
   font-variant-numeric: tabular-nums;
 }
-.guide {
-  margin: 0;
-  padding: 10px 12px;
-  background: var(--btn);
-  border-radius: var(--r-sm);
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 11.5px;
-  line-height: 1.65;
-  color: var(--sub);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: normal;
+.display-card .el-card__body {
+  justify-content: flex-start;
+  gap: 8px;
 }
-/* 预览保持 320×240 原始像素（不放大）；卡片变宽时居中，两侧留白对称。
-   **容器高度固定 240**：设备有 320×170 与 320×240 两种，若让容器跟着画布走，
-   切换/刷新设备时这一张卡就高/矮 70px，整页跟着跳（内容一旦超过视口，
-   左列「flex:1」的撑满就失效 → 所有卡片一起位移）。固定成能放下数值与文本的
-   那个尺寸（240），设备图在框内垂直居中，布局就与设备尺寸无关了。 */
-.preview {
+.display-card .field:first-of-type {
+  margin-top: 1px;
+}
+.display-card .hint {
+  margin-top: 6px;
+}
+
+.mode-switch {
   display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 240px;
-  flex: none;
+  width: 100%;
+  gap: 6px;
+  margin-bottom: 6px;
 }
-/* 画布/占位块的实际尺寸由模板内联 style 给出（= 设备自报尺寸，V1P 320×170 / V2 320×240），
-   这里只做上限约束：容器固定 240 高，超出则等比收缩，**不能**写死 width/height，
-   否则 320×170 的图会被拉成 320×240（纵向拉伸）。 */
-.preview img,
-.preview canvas {
-  display: block;
-  flex: none;
-  max-width: 100%;
-  max-height: 100%;
-  border-radius: var(--r-sm);
-  image-rendering: pixelated;
+.mode-switch .el-radio-button {
+  flex: 1;
 }
-/* 弹窗（数据源自检） */
-.modal-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
+.mode-switch .el-radio-button__inner {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
-}
-.modal {
-  width: min(430px, calc(100vw - 48px));
-  background: var(--panel);
+  gap: 5px;
+  width: 100%;
+  height: 26px;
+  padding: 0 6px;
   border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  padding: 16px 18px;
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
+  border-radius: var(--r-ctl) !important;
+  box-shadow: none !important;
+  background: var(--btn);
+  color: var(--fg);
+  font-size: 12px;
 }
-.modal h3 {
+.mode-switch .el-radio-button__inner svg {
+  font-size: 13px;
+}
+.mode-switch .el-radio-button.is-active > .el-radio-button__inner {
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel)) !important;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line)) !important;
+  color: var(--accent) !important;
+  font-weight: 600;
+}
+.mode-switch .el-radio-button__original-radio:focus-visible + .el-radio-button__inner {
+  outline: none;
+}
+.themed .el-card__body {
+  justify-content: center;
+  gap: var(--sp-3);
+}
+.theme-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 0 0 8px;
+  width: 100%;
+}
+.theme-select {
+  flex: 1;
+  min-width: 0;
+}
+.run-btn {
+  flex: none;
+  width: 42px; /* ≥1.6:1 的圆角矩形，而不是圆形/正方形 */
+  height: 26px;
+  padding: 0;
+  border-radius: var(--r-ctl) !important;
+}
+.run-btn svg {
   font-size: 14px;
-  color: var(--title);
 }
-.modal h3 svg {
-  font-size: 18px;
+
+/* ---------------- 性能 ---------------- */
+.perf-cols {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding-bottom: 10px;
 }
-.modal .hint a {
-  color: var(--accent);
-  cursor: pointer;
+.perf-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
-.modal .btns {
-  margin-top: 12px;
+.metric-card .el-card__body {
+  padding: 4px 10px 6px;
+}
+.metric-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  height: 23px;
+  border-bottom: 1px dashed color-mix(in srgb, var(--line) 55%, transparent);
+  font-size: 11.5px;
+}
+.metric-row:last-child {
+  border-bottom: none;
+}
+.metric-row .lbl {
+  color: var(--sub);
+}
+.metric-row .val {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.metric-row .val.off {
+  color: var(--sub);
+}
+
+/* ---------------- 弹窗（数据源） ---------------- */
+.prog {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl);
+  background: var(--btn);
+}
+.prog-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--sub);
+}
+.prog-head .grow {
+  flex: 1;
+  min-width: 0;
+}
+.prog .el-progress {
+  margin: 6px 0;
+}
+.el-progress-bar__outer {
+  background: var(--btn-hover);
+  border-radius: 999px;
+}
+.el-progress-bar__inner {
+  border-radius: 999px;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+
+/* Element Plus 浅色错误提示的标题/正文在浅色底上对比度不足（axe serious），统一压深。
+   error 色保留在图标/边框，文字用更深的红。 */
+html.light .el-alert--error .el-alert__title {
+  color: #b42318;
+}
+html.light .el-alert--error .el-alert__description {
+  color: #7a271a;
 }

@@ -47,6 +47,7 @@ pub fn state() -> Value {
         "open": link_gen.is_some(),
         "ready": s.ready,
         "serial": serial,
+        "reconnecting": usb_reconnecting(),
     })
 }
 pub fn cancel_request(request_id: &str) -> Result<Value, String> {
@@ -249,7 +250,7 @@ pub fn start_prepared(
     let mut guard = SessionGuard { owner: Some(owner), link_gen: None };
     resume();
     let url = panel_url(&html);
-    let needle = panel_file_name(&html);
+    let needle = panel_needle(&html);
     session.check()?;
     ensure_panel_webview(&app, &url, w, h)?;
     session.check()?;
@@ -830,18 +831,71 @@ fn looks_black(rgb565: &[u8]) -> bool {
 
 /// 建立一次 CDP 会话（连接、导航、等页面就绪、注入自取脚本、锁视口）。
 /// 会话失败只影响这一轮，由 [`run_supervised`] 重连。
-async fn setup_session(ws: &str, url: &str, w: u32, h: u32) -> Result<render::Cdp, String> {
+async fn setup_session(ws: &str, url: &str, w: u32, h: u32, remote: bool) -> Result<render::Cdp, String> {
     let mut cdp = render::Cdp::connect(ws).await?;
     cdp.cmd("Page.enable", json!({})).await?;
     // 先导航到面板并等页面就绪 —— 否则首帧会抓到别的页面
     let _ = cdp.call("Page.navigate", json!({ "url": url })).await;
-    // 等「真的加载完」而不是死等固定时长：file:// 通常 <100ms，这段直接决定切换延迟
+    // 等「真的加载完」而不是死等固定时长：file:// 通常 <100ms；在线页面要等网络。
     tokio::time::sleep(Duration::from_millis(80)).await;
-    let ready = wait_page_ready(&mut cdp, 3000).await;
-    crate::logging::info(&format!("页面就绪 ready={ready}"));
-    // 注入自取脚本：**导航之后**注入。导航会重建 JS 上下文，旧定时器自然消失，
-    // 所以复用时不累积；脚本等 `__setSlot` 就绪后自动从本地 API 取真值。
-    let _ = cdp.call("Runtime.evaluate", json!({ "expression": pull_js() })).await;
+    let ready_ms = if remote { 10_000 } else { 3_000 };
+    let ready = wait_page_ready(&mut cdp, ready_ms).await;
+    crate::logging::info(&format!(
+        "页面就绪 ready={ready}（{}）",
+        if remote { "在线" } else { "本地" }
+    ));
+    if remote {
+        // 证书错误 / DNS 失败 / 断网时 Page.navigate 不一定报错，浏览器会显示错误页；
+        // 用 location.href 与错误页主容器判断，别把错误页截图当面板发到设备上。
+        let href = cdp
+            .call(
+                "Runtime.evaluate",
+                json!({ "expression": "String(location.href)", "returnByValue": true }),
+            )
+            .await
+            .ok()
+            .and_then(|v| {
+                v.get("result")
+                    .and_then(|r| r.get("value"))
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+        if href.starts_with("chrome-error")
+            || href.starts_with("edge-error")
+            || href.starts_with("about:neterror")
+            || href.starts_with("about:blank")
+        {
+            return Err(format!(
+                "在线页面加载失败（{href}）；请检查网址、网络与 HTTPS 证书"
+            ));
+        }
+        // Chromium 的错误页（证书 / DNS / 断网）会保留原 URL，location.href 仍是用户 URL，
+        // 所以再查一下错误页主容器 `#main-frame-error`，避免把错误页当面板推给设备。
+        let error_page = cdp
+            .call(
+                "Runtime.evaluate",
+                json!({ "expression": "!!document.querySelector('#main-frame-error')", "returnByValue": true }),
+            )
+            .await
+            .ok()
+            .and_then(|v| v.get("result").and_then(|r| r.get("value")).and_then(|b| b.as_bool()))
+            .unwrap_or(false);
+        if error_page {
+            return Err(format!(
+                "在线页面加载失败（浏览器错误页：{href}）；请检查网址、网络与 HTTPS 证书"
+            ));
+        }
+        if !ready {
+            return Err(format!("在线页面 10s 内未加载完成（{href}）"));
+        }
+        // 在线页面自己 fetch 本机 8766；**不注入**自取脚本，避免 10Hz 轮询 `__setSlot`。
+        crate::logging::info("在线页面：跳过自取脚本注入（页面自己 fetch localhost:8766）");
+    } else {
+        // 注入自取脚本：**导航之后**注入。导航会重建 JS 上下文，旧定时器自然消失，
+        // 所以复用时不累积；脚本等 `__setSlot` 就绪后自动从本地 API 取真值。
+        let _ = cdp.call("Runtime.evaluate", json!({ "expression": pull_js() })).await;
+    }
     // 视口锁死 W×H
     cdp.call(
         "Emulation.setDeviceMetricsOverride",
@@ -923,14 +977,18 @@ async fn run_supervised<F: FnMut(&[u8], u32, u32, u64)>(
     link_gen: Option<u64>,
     io_gen: Option<u64>,
 ) -> Result<(u64, u64), String> {
-    let _link_guard = LinkGuard(link_gen);
-    let needle = panel_file_name(&url);
+    let current_link = Arc::new(Mutex::new(link_gen));
+    let _link_guard = LinkGuard { original: link_gen, current: current_link.clone() };
+    let needle = panel_needle(&url);
     let started = Instant::now();
     let mut next_ws = Some(initial_ws);
     let mut frames = 0u64;
     let mut sent = 0u64;
     let mut fails = 0u32;
-    loop {
+    let mut io_gen = io_gen;
+    // 只在「本轮确实接管成功」时记录 SN：链路失效后按 SN 重新枚举/接管，不会误抢别的设备。
+    let mut target_serial = if io_gen.is_some() { link_serial() } else { None };
+    'supervisor: loop {
         if cancel.load(Ordering::SeqCst) {
             break;
         }
@@ -975,6 +1033,65 @@ async fn run_supervised<F: FnMut(&[u8], u32, u32, u64)>(
                 sent += s;
                 break;
             }
+            Err(e) if e.starts_with(USB_LINK_LOST_PREFIX) => {
+                if cancel.load(Ordering::SeqCst) {
+                    break;
+                }
+                // 设备被拔掉/旧句柄失效：先释放旧链路（含归还 GUI 租约），再按 SN 自动重枚举接管。
+                crate::logging::warn(&format!(
+                    "USB 链路失效，释放旧句柄并自动重连（目标 {:?}）：{e}",
+                    target_serial
+                ));
+                let _reconnecting = ReconnectGuard::new();
+                if let Some(g) = current_link.lock().unwrap().take() {
+                    close_link_if_gen(g);
+                }
+                let mut usb_fails = 0u32;
+                loop {
+                    if cancel.load(Ordering::SeqCst) {
+                        break 'supervisor;
+                    }
+                    // CLI `--render <seconds>` 的时限在重连期间也要生效，别无限等设备。
+                    if seconds.is_some_and(|s| s - started.elapsed().as_secs_f64() <= 0.0) {
+                        break 'supervisor;
+                    }
+                    match UsbLink::open(target_serial.clone(), w, h) {
+                        Ok(Some(g)) => {
+                            *current_link.lock().unwrap() = Some(g);
+                            io_gen = Some(g);
+                            target_serial = link_serial().or(target_serial);
+                            FORCE_FULL.store(true, Ordering::SeqCst);
+                            crate::logging::info(&format!(
+                                "USB 链路已自动恢复（gen={g}，serial={:?}）",
+                                target_serial
+                            ));
+                            break;
+                        }
+                        Ok(None) => {
+                            // 复用别人的句柄：不归本会话收尾，继续等自己的链路。
+                            usb_fails += 1;
+                            if usb_fails == 1 || usb_fails % 5 == 0 {
+                                crate::logging::warn("USB 自动重连：链路被其他操作复用，继续重试…");
+                            }
+                        }
+                        Err(e) => {
+                            usb_fails += 1;
+                            if usb_fails == 1 || usb_fails % 5 == 0 {
+                                crate::logging::warn(&format!(
+                                    "USB 自动重连第 {usb_fails} 次失败：{e}"
+                                ));
+                            }
+                        }
+                    }
+                    if wait_or_cancel(cancel.clone(), reconnect_backoff(usb_fails.max(1))).await {
+                        break 'supervisor;
+                    }
+                }
+                fails = 0;
+                // 重新找面板 CDP（页面通常还在，短探即可），沿用同一会话继续下发。
+                next_ws = None;
+                continue 'supervisor;
+            }
             Err(e) => {
                 if cancel.load(Ordering::SeqCst) {
                     break;
@@ -1004,14 +1121,18 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
     io_gen: Option<u64>,
 ) -> Result<(u64, u64), String> {
     let t0 = std::time::Instant::now();
-    let mut cdp = setup_session(&ws, &url, w, h).await?;
+    let remote = is_remote_url(&url);
+    let mut cdp = setup_session(&ws, &url, w, h, remote).await?;
     // 设备句柄由 `run_supervised` 统一持有：CDP 会话断开重连时**不重新移交 USB**。
     // Reconnect can reuse only this session's generation, never a new link
     // installed by a later external command.
-    let mut has_usb = io_gen.is_some() && current_link_gen() == io_gen;
+    let has_usb = io_gen.is_some() && current_link_gen() == io_gen;
     if !has_usb {
         crate::logging::warn("USB 未接管，本轮仅预览");
     }
+    // 连续下发失败次数；达到阈值就判定链路失效，由 `run_supervised` 重新接管。
+    let mut usb_fail_streak = 0u32;
+    let mut usb_lost: Option<String> = None;
 
     // WebView2 **不支持** `Page.startScreencast`（实测收不到 screencastFrame），只能轮询截屏。
     // 抓屏节奏 = 下发节奏：把下一张截图提前 `SHOT_EST` 发出去，让它正好在「到点」前后回来。
@@ -1119,6 +1240,7 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
                     match r {
                         Ok(Some(s)) => {
                             sent += 1;
+                            usb_fail_streak = 0;
                             commit_frame_baseline(&mut prev, rgb565, s.kind);
                             st.sent += 1;
                             st.bytes += s.bytes as u64;
@@ -1152,19 +1274,22 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
                             // 下一次必须整屏重发，不能让静止帧被差分优化永久跳过。
                             prev.clear();
                             st.fail += 1;
+                            usb_fail_streak += 1;
                             // **必须进日志文件**：旧版这里是 eprintln，release 无控制台 → 断联零痕迹
                             TxStats::warn_throttled(
                                 &mut st.last_fail_warn,
                                 now,
                                 &format!("USB 下发失败（仍在重试）：{e}"),
                             );
-                            // 设备被拔掉：句柄已失效，继续每帧重试只会让每帧等满管道
-                            // 超时（3s），设备命令也会排在同一把 I/O 锁后面 →
-                            // 界面表现为死机。立刻释放链路、退回「仅预览」，等用户重新插好。
-                            if link_unusable(&e) {
-                                crate::logging::warn(&format!("设备已断开，停止下发（仅预览）：{e}"));
-                                if let Some(g) = io_gen { close_link_if_gen(g); }
-                                has_usb = false;
+                            // 设备被拔掉（已识别为 GONE）或连续失败达到阈值：
+                            // 旧版只认前者、且关链路后不自动重开 → 界面一直「运行中」但面板永远无数据。
+                            // 现在把这种情况交给 `run_supervised`：释放旧句柄 → 按 SN 重新枚举接管。
+                            if usb_link_lost_after(&e, usb_fail_streak) {
+                                crate::logging::warn(&format!(
+                                    "USB 链路连续失败 {usb_fail_streak} 次，判定失效：{e}"
+                                ));
+                                usb_lost = Some(e);
+                                break "USB 链路失效";
                             }
                         }
                     }
@@ -1223,7 +1348,10 @@ async fn run_inner<F: FnMut(&[u8], u32, u32, u64)>(
     ));
     // 「用户停止 / 到达运行时长」= 正常结束；其余（CDP 断开/超时/发送失败/解码失败）
     // 交给 `run_supervised` 重连，不能直接结束整条管线。
-    if reason == "用户停止" || reason == "到达运行时长" {
+    // USB 链路失效单独标记：监督循环要释放并重新接管设备，而不是只重连页面。
+    if let Some(e) = usb_lost {
+        Err(format!("{USB_LINK_LOST_PREFIX}：{e}"))
+    } else if reason == "用户停止" || reason == "到达运行时长" {
         Ok((frames, sent))
     } else {
         Err(format!("{reason}"))
@@ -1293,11 +1421,66 @@ fn resolve_panel(path: &str) -> std::path::PathBuf {
 
 // 主题目录扫描 / 手动导入在 `assets` 模块（约定：一个主题 = `assets/<主题名>/`，HTML 与图片同层）。
 
+/// 在线 URL（http/https）？本地素材传相对路径，在线素材传完整 URL。
+fn is_remote_url(html: &str) -> bool {
+    let s = html.trim_start();
+    s.starts_with("http://") || s.starts_with("https://")
+}
 
-/// 面板实际渲染用的 URL：带上 `?__api=<port>`，页面据此开启「自取本地指标」。
-/// 检查闸门直接用 `file://` 打开（无此参数）→ 不自取，注入结果确定。
+/// 在线 URL 追加 `__api=<port>`：保留已有 query 与 #hash（页面可读它拿本地 API 端口）。
+fn remote_panel_url(raw: &str) -> String {
+    let raw = raw.trim();
+    let (body, hash) = match raw.find('#') {
+        Some(i) => (&raw[..i], &raw[i..]),
+        None => (raw, ""),
+    };
+    let sep = if body.contains('?') {
+        if body.ends_with('?') || body.ends_with('&') {
+            ""
+        } else {
+            "&"
+        }
+    } else {
+        "?"
+    };
+    format!("{body}{sep}__api={}{hash}", crate::api::PORT)
+}
+
+/// 面板实际渲染用的 URL：
+/// - 本地素材：`file://` + `?__api=<port>`（页面据此开启「自取本地指标」）；
+/// - 在线素材：用户 URL 原样使用，只追加 `__api=<port>`（不注入自取脚本）。
 fn panel_url(html: &str) -> String {
-    format!("{}?__api={}", file_url(html), crate::api::PORT)
+    if is_remote_url(html) {
+        remote_panel_url(html)
+    } else {
+        format!("{}?__api={}", file_url(html), crate::api::PORT)
+    }
+}
+
+/// CDP target 的匹配串：
+/// - 本地素材：面板文件名（现有行为）；
+/// - 在线素材：`scheme://host`（忽略 path/query/hash，同主机内跳转也能重连）。
+fn panel_needle(html: &str) -> String {
+    let s = html.trim();
+    let lower = s.to_ascii_lowercase();
+    let (scheme, rest) = if lower.starts_with("https://") {
+        ("https://", &s[8..])
+    } else if lower.starts_with("http://") {
+        ("http://", &s[7..])
+    } else {
+        return panel_file_name(s);
+    };
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let mut host = rest.split('/').next().unwrap_or(rest).to_ascii_lowercase();
+    // 浏览器会把默认端口从 URL 里省掉（:443 / :80），needle 也按去掉端口的形式匹配。
+    if !host.starts_with('[') {
+        if let Some((h, p)) = host.rsplit_once(':') {
+            if (scheme == "https://" && p == "443") || (scheme == "http://" && p == "80") {
+                host = h.to_string();
+            }
+        }
+    }
+    format!("{scheme}{host}")
 }
 
 /// 本地路径 → `file://` URL（去 `\\?\` 前缀，非 ASCII / 空格做百分号编码）。
@@ -1435,6 +1618,38 @@ fn link_unusable(e: &str) -> bool {
     winusb::is_gone(e) || e.contains("设备未接管") || e.contains("设备句柄已释放")
 }
 
+/// `run_inner` 用这个前缀告诉监督循环：USB 链路失效，应当释放并重新接管，
+/// 而不是当成 CDP 断开去重连页面。
+const USB_LINK_LOST_PREFIX: &str = "USB_LINK_LOST";
+/// 连续下发失败达到这个次数就判定链路失效。
+/// 覆盖 WinError 22（ERROR_BAD_COMMAND）这类「设备重插后旧句柄还在、但不报已断开」的情况。
+const USB_FAIL_LIMIT: u32 = 3;
+
+fn usb_link_lost_after(e: &str, fail_streak: u32) -> bool {
+    link_unusable(e) || fail_streak >= USB_FAIL_LIMIT
+}
+
+/// 管线是否正处于「USB 链路失效 → 自动重连」过程中（前端状态行展示用）。
+static USB_RECONNECTING: AtomicBool = AtomicBool::new(false);
+
+/// 进入作用域置位、离开自动复位：覆盖重连成功、用户停止、超时等所有出口。
+struct ReconnectGuard;
+impl ReconnectGuard {
+    fn new() -> Self {
+        USB_RECONNECTING.store(true, Ordering::SeqCst);
+        Self
+    }
+}
+impl Drop for ReconnectGuard {
+    fn drop(&mut self) {
+        USB_RECONNECTING.store(false, Ordering::SeqCst);
+    }
+}
+
+pub fn usb_reconnecting() -> bool {
+    USB_RECONNECTING.load(Ordering::SeqCst)
+}
+
 /// 接管设备（必要时先向 GUI 申请移交）。
 /// 返回 `Some(gen)` = 本次**新打开**（携带链路代数，调用方负责按代数 `close_link_if_gen`）；
 /// `None` = 已有人接管、**复用了现有句柄**（调用方**不能**关，否则会把别人的链路关掉）。
@@ -1512,10 +1727,22 @@ fn retire_link(old: Option<Arc<Mutex<UsbLink>>>) {
 
 /// 离开作用域即释放设备（覆盖 `?` 提前返回）。携带「本轮自己打开的链路代数」，
 /// `None` = 本轮没新开（复用/未接管）→ 收尾时什么都不关。
-struct LinkGuard(Option<u64>);
+///
+/// 自动重连会在同一轮里换链路代数，所以 `current` 用共享槽记录最新一代：
+/// 收尾时关的必须是**最新**那条，而不是开场时的旧代数。
+struct LinkGuard {
+    original: Option<u64>,
+    current: Arc<Mutex<Option<u64>>>,
+}
 impl Drop for LinkGuard {
     fn drop(&mut self) {
-        if let Some(g) = self.0 {
+        let cur = self.current.lock().unwrap().take();
+        if let Some(g) = cur {
+            // 自己自动重连出来的新链路没有别的 guard 负责，收尾时补发退出帧；
+            // 开场那条由 `SessionGuard` 负责退出帧，这里只关句柄（与旧行为一致）。
+            if Some(g) != self.original {
+                send_exit_if_gen(g);
+            }
             close_link_if_gen(g);
         }
     }
@@ -1862,7 +2089,45 @@ impl Drop for UsbLink {
 
 #[cfg(test)]
 mod tests {
-    use super::commit_frame_baseline;
+    use super::{commit_frame_baseline, panel_needle, remote_panel_url, usb_link_lost_after};
+
+    #[test]
+    fn remote_url_gets_api_port_without_breaking_query_or_hash() {
+        let api = crate::api::PORT;
+        assert_eq!(
+            remote_panel_url("https://example.com/panel/"),
+            format!("https://example.com/panel/?__api={api}")
+        );
+        assert_eq!(
+            remote_panel_url("https://example.com/panel/?a=1#top"),
+            format!("https://example.com/panel/?a=1&__api={api}#top")
+        );
+        assert_eq!(
+            remote_panel_url("https://example.com/panel/?a=1&"),
+            format!("https://example.com/panel/?a=1&__api={api}")
+        );
+    }
+
+    #[test]
+    fn remote_panel_needle_matches_browser_normalized_host() {
+        // 浏览器 URL 会小写 host、省略默认端口；needle 必须同样处理，否则重连时匹配不到 target。
+        assert_eq!(panel_needle("HTTPS://Example.COM:443/a/b?x=1#h"), "https://example.com");
+        assert_eq!(panel_needle("http://localhost:8899/x"), "http://localhost:8899");
+        assert_eq!(panel_needle("https://example.com/a/b"), "https://example.com");
+        // 本地素材仍用文件名匹配，行为不变。
+        assert_eq!(panel_needle("assets/theme/v2/index.html"), "index.html");
+    }
+
+    #[test]
+    fn stale_handle_error_22_needs_a_few_failures_before_reconnect() {
+        // WinError 22：设备重插后旧句柄不报「已断开」，写入会一直失败。
+        // 允许偶发一次，连续 3 次就判定链路失效并重新接管。
+        assert!(!usb_link_lost_after("WinUsb_WritePipe 失败：22", 1));
+        assert!(!usb_link_lost_after("WinUsb_WritePipe 失败：22", 2));
+        assert!(usb_link_lost_after("WinUsb_WritePipe 失败：22", 3));
+        // 已明确 GONE 的立即重连，不用等阈值。
+        assert!(usb_link_lost_after("[GONE]设备已断开（WinError 1167）", 1));
+    }
 
     #[test]
     fn successful_ack_commits_the_device_frame() {

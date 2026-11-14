@@ -18,6 +18,8 @@
 - **两种设备自适应**：按设备自报尺寸渲染，V1P = 320×170、V2 = 320×240，素材按尺寸分目录。
 - **多设备切换**：设备下拉列表（SN 尾号 + 机型），切换时自动停止旧设备 → 探测尺寸 → 按该尺寸历史主题重连下发。
 - **主题素材**：一个主题 = `assets/<主题名>/<尺寸>/index.html`（HTML 与图片同层），可从本地手动导入。
+- **在线素材**：一条在线素材 = `online/<id>.toml`（标题 / 描述 / V1P、V2 两个 https URL）；页面由隐藏 WebView2 加载，自己从本机 `127.0.0.1:8766` 取数，按设备尺寸抓帧下发。首页「主题切换」卡本地/在线两种模式随时切换；侧栏「在线」页管理配置（可手改 TOML）。
+- **USB 掉线自愈**：设备拔插或旧句柄写入失败（含 `WinUsb_WritePipe 失败：22`）时，管线自动释放旧链路、按 SN 重新枚举接管并整屏重发，不再停在「运行中但面板无数据」；重连期间状态行显示「正在自动重连…」。「刷新」按钮强制以物理枚举为准，并保留本程序正在接管的设备。
 - **显示设置**：亮度 / 旋转 / 跟随息屏，一次接管连发三条并强制整屏重发。
 - **数据源**：LibreHardwareService（LHS）共享内存，程序内可一键下载 / 校验（sha256）/ 安装；网络由 Win32 `GetIfTable2` 统一提供。
 - **单位两档**：全自动（按素材声明的 `data-unit` 换算）/ 手动（四类单位各选一覆盖）。
@@ -48,7 +50,12 @@ npm run tauri build    # 生产构建，只生成 exe（不生成安装包）
 构建产物：
 
 - 可执行文件：`src-tauri/target/release/jiadian-monitor.exe`
-- 便携包：发版工作流会生成 `jiadian-monitor-v<版本>.zip`（exe + `assets/` + `peripherals/` + 卸载脚本）；本地把 exe 与 `assets/`、`peripherals/` 放一起即可运行
+- 便携包：发版工作流会生成 `jiadian-monitor-v<版本>.zip`（exe + `assets/` + `peripherals/` + 卸载脚本 + 许可证）；本地把 exe 与 `assets/`、`peripherals/` 放一起即可运行
+
+> **本地完整包与云端包的区别**：仓库内 `assets/` 只收录程序图标（`icon.png`），主题素材不随公开仓库分发，
+> 因此云端 Release 的 zip **不含主题文件夹**；本地 `scripts/build.ps1` 从部署目录 `bin/assets/` 打包，
+> 会把已放入的主题一起带上，并额外包含 `online/` 模板、`LICENSE` 与 `THIRD-PARTY-NOTICES.md`。
+> 需要开箱即用的完整主题，请使用本地打出的完整包，或把自己的主题放进 `assets/`。
 
 ### 便携运行布局
 
@@ -59,10 +66,11 @@ jiadian-monitor.exe
 settings.ini       全部设置（自动生成，可手工编辑）
 assets/            主题素材（一个主题 = 一层文件夹，文件夹名即主题名）
 peripherals/       外设协议 JSON（index.json + brands/，可直接编辑）
+online/            在线素材 TOML（程序自动创建；可手工编辑，界面里也有管理页）
 log/               运行日志（自动创建）
 ```
 
-程序按 **exe 同级 → 当前工作目录** 的顺序找 `assets/` 与 `peripherals/`。
+程序按 **exe 同级 → 当前工作目录** 的顺序找 `assets/`、`peripherals/` 与 `online/`。
 
 ## 工作原理
 
@@ -79,6 +87,10 @@ WinUSB 增量下发 → 设备屏
 - 程序自身起一个本地 HTTP 服务（仅回环，默认端口 8766；`127.0.0.1` / `localhost` / `[::1]` 均可）：
   `/metrics`（规范单位指标）、`/units`、`/health` 等，`GET /` 是接口索引。
   面板里的自取脚本每秒拉一次 `/metrics`，按 `data-unit` 换算后喂给 `__setSlot`。
+- **在线素材**走同一条渲染/差分/USB 管线，但页面来自用户配置的 https URL，**不注入**自取脚本：
+  页面自己 `fetch('http://127.0.0.1:8766/metrics')`（可读 `?__api=8766`）取数。
+  只允许 https（本机调试允许 `http://localhost`）；控制类接口 `/app/show`、`/app/quit`
+  仅接受 `Origin: null` / 无 Origin 的调用，远程页面无法调用。
 - 与官方上位机共用设备时，通过 `/usb/handoff/start|keepalive|finish` 借用 USB 使用权（租约 120s，程序每 20s 续期）。
 - 外设电量走 HID（不是 WinUSB）：枚举 HID 端点的 `VID/PID/UsagePage/Usage/报表长度`，按
   `peripherals/index.json` 找到品牌与协议档位，再按该品牌 JSON 发查询帧、解析回包。
@@ -91,8 +103,8 @@ WinUSB 增量下发 → 设备屏
 ```
 src/                    前端（Vue 3 + TypeScript）
   App.vue               主界面 / 设备与主题切换 / 实时预览
-  components/           侧栏、设置页、素材页、标题栏
-  composables/          设置项
+  components/           侧栏、设置页、素材页、在线页、标题栏
+  composables/          设置项、在线素材共享状态
   line-md-icons.ts      离线打包的 line-md 图标子集（不是 CDN）
 src-tauri/              Rust 后端
   src/
@@ -107,10 +119,12 @@ src-tauri/              Rust 后端
     metrics.rs          指标组装（含 Win32 磁盘 / 网络 / 开机时长）
     units.rs            单位换算
     api.rs              本机数据 API（仅回环，8766；IPv4 + IPv6 双监听）
+    online.rs           在线素材 TOML 扫描 / 校验 / 原子保存 + 远程面板加载
     peripherals/        外设电量：HID 枚举 + JSON 协议引擎（expr / model / hid / mod）
     tray.rs / single.rs 托盘、单实例
   capabilities/         窗口权限
 peripherals/            外设协议 JSON 库（index.json + brands/），随包发布、用户可直接改
+online-defaults/        在线素材 README 模板（发版时复制到 bin/online/，用户配置不进 ZIP）
 ```
 
 ## 第三方组件
