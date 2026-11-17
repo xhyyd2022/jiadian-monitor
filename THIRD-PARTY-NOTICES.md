@@ -1,6 +1,6 @@
 # 第三方开源组件与许可证（THIRD-PARTY NOTICES）
 
-佳点监控（jiadian-monitor）v0.9.6 使用下列第三方开源组件。本文件由
+佳点监控（jiadian-monitor）v0.9.7 使用下列第三方开源组件。本文件由
 `app/scripts/gen-third-party.mjs` 依据实际安装/锁定版本生成，升级依赖后请重新生成。
 
 - 本程序自身许可：**PolyForm-Noncommercial-1.0.0**（源码可见的非商业许可，不是 OSI 开源许可），

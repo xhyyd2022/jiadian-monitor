@@ -5,9 +5,9 @@
   版本号改这五处：package.json / package-lock.json / src-tauri/tauri.conf.json / src-tauri/Cargo.toml / src-tauri/Cargo.lock（必须一致）。
 -->
 
-## v0.9.6 · 累计更新：托盘修复 + USB 释放/重连 + 外设协议库 TOML
+## v0.9.7 · 累计更新：托盘修复 + USB 释放/重连 + 外设协议库 TOML
 
-本次是 0.9.6 的累计更新，包含此前界面打磨与本次外设/USB 修复。
+0.9.7 汇总 0.9.6 之后的累计更新：托盘完整性修复、USB 释放/重连、外设协议库 TOML、局域网 http 与界面细节。由于 0.9.6 的 Release 已占用同一版本号，本次用 0.9.7 重新发完整包。
 
 ### 修复：普通权限启动时托盘图标不显示
 
@@ -53,7 +53,7 @@
 
 ### 迁移与升级
 
-- 用新 `jiadian-monitor-v0.9.6.zip` 覆盖到原目录；`settings.ini` 不在包内，原设置保留。
+- 用新 `jiadian-monitor-v0.9.7.zip` 覆盖到原目录；`settings.ini` 不在包内，原设置保留。
 - 覆盖后运行一次 `清除旧版协议.cmd`（删除旧版 JSON 协议库）；新包自带 TOML 协议库。
 - 云端 Release 的 zip 不含主题素材（公开仓库只收录程序图标）；需要内置主题请使用本地完整包。
 
