@@ -1,0 +1,58 @@
+# 佳点监控 · Endgame Gear（endgame）外设协议（TOML，支持注释）
+# 说明：64 字节 Feature，Report ID 0xA1，发 [0xB4]。回包 b[16] 是电量、b[17] 是电压。
+# 匹配/帧/校验规则改这里；界面点「刷新」会重新读取。
+
+brand = "endgame"
+name = "Endgame Gear"
+note = "64 字节 Feature，Report ID 0xA1，发 [0xB4]。回包 b[16] 是电量、b[17] 是电压。"
+default = "xm64"
+
+[protocols]
+[protocols.xm64]
+desc = "Feature 0xA1 + 0xB4 查询"
+transport = "feature"
+note = "b[16] 是百分比、b[17] 起是电压。如果电量读数不稳，可以用 millivolts 交叉验证。"
+
+[protocols.xm64.match]
+featureLength = 64
+
+[protocols.xm64.tx]
+length = 64
+reportId = "a1"
+
+[protocols.xm64.tx.bytes]
+"1" = "b4"
+
+
+[protocols.xm64.rx]
+length = 64
+timeoutMs = 300
+attempts = 3
+intervalMs = 40
+
+[[protocols.xm64.rx.match]]
+offset = 0
+equals = "a1"
+
+[[protocols.xm64.rx.match]]
+offset = 1
+equals = "01"
+
+
+[protocols.xm64.battery]
+expr = "b[16]"
+min = 1
+max = 100
+
+[[protocols.xm64.fields]]
+name = "millivolts"
+expr = "u16be(17)"
+min = 0
+max = 10000
+note = "电压，可用来交叉验证电量"
+
+[protocols.xm64.sample]
+rx = "a1 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 4b 0f 5c"
+
+[protocols.xm64.sample.expect]
+battery = 75

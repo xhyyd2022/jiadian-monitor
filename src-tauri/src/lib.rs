@@ -883,7 +883,7 @@ pub fn run() {
     // 本地指标 API：面板网页直接 fetch，无需注入。
     api::spawn();
 
-    // 外设电量：后台线程按 `peripherals/index.json` 的间隔轮询 HID 设备。
+    // 外设电量：后台线程按 `peripherals/index.toml` 的间隔轮询 HID 设备。
     peripherals::spawn();
 
     // 改名（jiaidian → jiadian）后把旧的自启动值搬过来，别让它继续指向旧 exe。

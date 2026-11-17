@@ -27,6 +27,7 @@ const items = [
           type="button"
           class="side-btn"
           :class="{ on: page === it.id }"
+          :aria-current="page === it.id ? 'page' : undefined"
           @click="$emit('nav', it.id)"
         >
           <Icon :icon="it.icon" />

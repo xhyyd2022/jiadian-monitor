@@ -1,0 +1,57 @@
+# 佳点监控 · VAXEE（vaxee）外设协议（TOML，支持注释）
+# 说明：64 字节 Feature 0x0E 0xA5。电量原始值每档 5%，所以是 0..20 的档位，不是百分比。
+# 匹配/帧/校验规则改这里；界面点「刷新」会重新读取。
+
+brand = "vaxee"
+name = "VAXEE"
+note = "64 字节 Feature 0x0E 0xA5。电量原始值每档 5%，所以是 0..20 的档位，不是百分比。"
+default = "xe64"
+
+[protocols]
+[protocols.xe64]
+desc = "Feature 0x0E：Page 0x0B 电量、Page 0x10 充电"
+transport = "feature"
+note = "b[5] 是 0..20 的档位，乘 5 才是百分比。充电状态这条协议里没实测到，所以没写 charging。"
+
+[protocols.xe64.match]
+featureLength = 64
+
+[protocols.xe64.tx]
+length = 64
+reportId = "0e"
+
+[protocols.xe64.tx.bytes]
+"1" = "a5"
+"2" = "0b"
+"3" = "01"
+"4" = "01"
+
+
+[protocols.xe64.rx]
+length = 64
+timeoutMs = 300
+attempts = 3
+intervalMs = 40
+
+[[protocols.xe64.rx.match]]
+offset = 0
+equals = "0e"
+
+
+[protocols.xe64.battery]
+expr = "b[5] * 5"
+min = 5
+max = 100
+
+[[protocols.xe64.fields]]
+name = "level"
+expr = "b[5]"
+min = 0
+max = 20
+note = "原始档位 0..20"
+
+[protocols.xe64.sample]
+rx = "0e a5 0b 01 01 0f"
+
+[protocols.xe64.sample.expect]
+battery = 75

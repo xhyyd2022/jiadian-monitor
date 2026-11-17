@@ -1,0 +1,71 @@
+# 佳点监控 · 飞智（flydigi）外设协议（TOML，支持注释）
+# 说明：UsagePage 0xFFA0，33 字节中断报告，帧头 00 5A A5 01 02，命令 0x01。电量是 4 位档位编码，不是百分比。
+# 匹配/帧/校验规则改这里；界面点「刷新」会重新读取。
+
+brand = "flydigi"
+name = "飞智"
+note = "UsagePage 0xFFA0，33 字节中断报告，帧头 00 5A A5 01 02，命令 0x01。电量是 4 位档位编码，不是百分比。"
+default = "ffa033"
+
+[protocols]
+[protocols.ffa033]
+desc = "33 字节中断：payload[6] 低 4 位是档位、高 4 位是充电标志"
+transport = "output"
+note = "低 4 位 <= 5 时每档 20%，<= 10 时每档 10%——这是飞智自己的编码，不是线性的。高 4 位非 0 表示在充电。"
+
+[protocols.ffa033.match]
+usagePage = "FFA0"
+inputLength = 33
+
+[protocols.ffa033.tx]
+length = 33
+reportId = "00"
+
+[protocols.ffa033.tx.bytes]
+"1" = "5a"
+"2" = "a5"
+"3" = "01"
+"4" = "02"
+"5" = "01"
+
+[protocols.ffa033.tx.checksum]
+put = 32
+expr = "sum(0, 31) & 0xff"
+
+
+[protocols.ffa033.rx]
+length = 33
+timeoutMs = 500
+attempts = 3
+
+[[protocols.ffa033.rx.match]]
+offset = 1
+equals = "5a"
+
+[[protocols.ffa033.rx.match]]
+offset = 2
+equals = "a5"
+
+
+[protocols.ffa033.battery]
+expr = "if((b[6] & 0x0f) <= 5, (b[6] & 0x0f) * 20, (b[6] & 0x0f) * 10)"
+min = 0
+max = 100
+
+[[protocols.ffa033.fields]]
+name = "charging"
+expr = "(b[6] & 0xf0) != 0"
+
+[[protocols.ffa033.fields]]
+name = "level"
+expr = "b[6] & 0x0f"
+min = 0
+max = 15
+note = "原始档位，诊断用"
+
+[protocols.ffa033.sample]
+rx = "00 5a a5 01 02 00 45"
+
+[protocols.ffa033.sample.expect]
+battery = 100
+charging = true

@@ -26,7 +26,7 @@
 - **设置集中在一个文件**：exe 同级 `settings.ini`（带注释、可手工编辑），界面改动即原子写回。
 - **托盘常驻**：可设置关闭时收进系统托盘、开机静默启动；收托盘 / 最小化时自动停推预览（画面看不到就不传）。
 - **与官方上位机共存**：上位机（GUI）在运行时，通过其本地 HTTP 的 USB 使用权移交（`/usb/handoff/*`）借用 USB，**不需要退出 GUI**。
-- **外设电量**：侧栏「外设」页显示鼠标 / 键盘 / 耳机的品牌、型号与电量。协议是**纯 JSON 配置**（`peripherals/index.json` 按 PID 绑定品牌，`peripherals/brands/<品牌>.json` 写各品牌的读法），新增设备只改 JSON、不用重新编译。
+- **外设电量**：侧栏「外设」页显示鼠标 / 键盘 / 耳机的品牌、型号与电量。协议是**纯 TOML 配置**（`peripherals/index.toml` 按 PID 绑定品牌，`peripherals/brands/<品牌>.toml` 写各品牌的读法，支持注释），新增设备只改 TOML、不用重新编译。
 
 ## 运行环境
 
@@ -65,7 +65,7 @@ npm run tauri build    # 生产构建，只生成 exe（不生成安装包）
 jiadian-monitor.exe
 settings.ini       全部设置（自动生成，可手工编辑）
 assets/            主题素材（一个主题 = 一层文件夹，文件夹名即主题名）
-peripherals/       外设协议 JSON（index.json + brands/，可直接编辑）
+peripherals/       外设协议 TOML（index.toml + brands/，可直接编辑、支持注释）
 online/            在线素材 TOML（程序自动创建；可手工编辑，界面里也有管理页）
 log/               运行日志（自动创建）
 ```

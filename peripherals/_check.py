@@ -2,7 +2,7 @@
 
 只实现协议库用到的子集：表达式求值、tx 组帧、rx 匹配、sample 回放。
 """
-import json, os, re, sys
+import os, re, sys, tomllib
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -276,10 +276,10 @@ def num_field(spec, buf):
 
 
 def main():
-    idx = json.load(open(os.path.join(ROOT, 'index.json'), encoding='utf-8'))
+    idx = tomllib.load(open(os.path.join(ROOT, 'index.toml'), 'rb'))
     fails, total = [], 0
     for key, bmeta in idx['brands'].items():
-        bd = json.load(open(os.path.join(ROOT, bmeta['file']), encoding='utf-8'))
+        bd = tomllib.load(open(os.path.join(ROOT, bmeta['file']), 'rb'))
         for pname, p in bd['protocols'].items():
             smp = p.get('sample')
             if not smp:

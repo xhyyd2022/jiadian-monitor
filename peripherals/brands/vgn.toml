@@ -1,0 +1,445 @@
+# 佳点监控 · VGN（vgn）外设协议（TOML，支持注释）
+# 说明：VGN 自有 VID 0x391D 与部分 0x3554/0x320F/0x1CA6 设备。官方 VGN HUB 的设备表分 MouseEnc / RY / Yongjiaxin / LD / KC2 / Weisheng 等协议族；共享的 MouseEnc 17 字节帧也用于 Compx/ATK/VXE。
+# 匹配/帧/校验规则改这里；界面点「刷新」会重新读取。
+
+brand = "vgn"
+name = "VGN"
+note = "VGN 自有 VID 0x391D 与部分 0x3554/0x320F/0x1CA6 设备。官方 VGN HUB 的设备表分 MouseEnc / RY / Yongjiaxin / LD / KC2 / Weisheng 等协议族；共享的 MouseEnc 17 字节帧也用于 Compx/ATK/VXE。"
+default = "jm17"
+
+[protocols]
+[protocols.jm17]
+desc = "VGN MouseEnc / Compx 共享 17 字节鼠标端点：Report 08，Cmd 0x04 读电量"
+transport = "output"
+note = "官方 VGN HUB 的 MouseEnc 族，也是 Compx/Pulsar/ATK/VXE 公版 17 字节帧：报告 ID 08 + 16 字节载荷，命令在 b[1]（0x04 电量），校验和 = (0x55 - sum(b[1..15]) - 8) & 0xFF。电量 b[6]、充电 b[7]、电压 u16be(8)。已在本机 VGN 蜻蜓3 MasterGT 实机验证。"
+
+[protocols.jm17.match]
+usagePage = "FF02"
+usage = "0002"
+inputLength = 17
+outputLength = 17
+
+[protocols.jm17.tx]
+desc = "BatteryLevel 0x04"
+length = 17
+reportId = "08"
+
+[protocols.jm17.tx.bytes]
+"1" = "04"
+
+[protocols.jm17.tx.checksum]
+put = 16
+expr = "(0x55 - sum(1, 15) - 8) & 0xff"
+
+
+[protocols.jm17.rx]
+length = 17
+timeoutMs = 400
+attempts = 4
+intervalMs = 30
+
+[[protocols.jm17.rx.match]]
+offset = 0
+equals = "08"
+
+[[protocols.jm17.rx.match]]
+offset = 1
+equals = "04"
+
+
+[protocols.jm17.battery]
+expr = "b[6]"
+min = 0
+max = 100
+valid = "b[16] == ((0x55 - sum(1, 15) - 8) & 0xff)"
+
+[[protocols.jm17.fields]]
+name = "charging"
+expr = "b[7] == 1"
+note = "b[7]==1 表示充电中"
+
+[[protocols.jm17.fields]]
+name = "millivolts"
+expr = "u16be(8)"
+min = 0
+max = 10000
+note = "b[8..9] 为电压高/低字节"
+
+[protocols.jm17.sample]
+rx = "08 04 00 00 00 02 55 00 0f cd 00 00 00 00 00 00 16"
+
+[protocols.jm17.sample.expect]
+battery = 85
+charging = false
+millivolts = 4045
+
+
+
+[protocols.jm17_32]
+desc = "VGN Dragonfly King 专用 17 字节帧：Report 20，Cmd 0x04 读电量"
+transport = "output"
+note = "官方 VGN HUB 的 MouseEnc 族；Dragonfly King 用 Report ID 0x20（32），其余字段同 jm17。未实机验证。"
+
+[protocols.jm17_32.match]
+usagePage = "FF02"
+usage = "0002"
+inputLength = 17
+outputLength = 17
+
+[protocols.jm17_32.tx]
+length = 17
+reportId = "20"
+
+[protocols.jm17_32.tx.bytes]
+"1" = "04"
+
+[protocols.jm17_32.tx.checksum]
+put = 16
+expr = "(0x55 - sum(1, 15) - 32) & 0xff"
+
+
+[protocols.jm17_32.rx]
+length = 17
+timeoutMs = 400
+attempts = 4
+intervalMs = 30
+
+[[protocols.jm17_32.rx.match]]
+offset = 0
+equals = "20"
+
+[[protocols.jm17_32.rx.match]]
+offset = 1
+equals = "04"
+
+
+[protocols.jm17_32.battery]
+expr = "b[6]"
+min = 0
+max = 100
+valid = "b[16] == ((0x55 - sum(1, 15) - 32) & 0xff)"
+
+[[protocols.jm17_32.fields]]
+name = "charging"
+expr = "b[7] == 1"
+note = "b[7]==1 表示充电中"
+
+[[protocols.jm17_32.fields]]
+name = "millivolts"
+expr = "u16be(8)"
+min = 0
+max = 10000
+note = "b[8..9] 为电压高/低字节"
+
+[protocols.jm17_32.sample]
+rx = "20 04 00 00 00 02 55 00 0f cd 00 00 00 00 00 00 00"
+
+[protocols.jm17_32.sample.expect]
+battery = 85
+charging = false
+millivolts = 4045
+
+
+
+[protocols.vgnRy]
+desc = "VGN RY 鼠标族：64 字节 Feature Report，反码 CRC；F7 探测 → F6 切 2.4G → F7 读电量"
+transport = "feature"
+note = "官方 VGN HUB / VgnHidProvider 的 RY 鼠标族（Dragonfly 3 Pro Max、Y2 V2 Pro Max、F1 V5 Ultra 等）。CRC=255-(Σpayload[0..62]&0xFF)。未实机验证。"
+
+[protocols.vgnRy.match]
+usagePage = "FFFF"
+usage = "0002"
+featureLength = 64
+
+[[protocols.vgnRy.pre]]
+desc = "F7 探测 2.4G 状态"
+
+[protocols.vgnRy.pre.tx]
+length = 65
+reportId = "00"
+
+[protocols.vgnRy.pre.tx.bytes]
+"1" = "f7"
+
+[protocols.vgnRy.pre.tx.checksum]
+put = 64
+expr = "(255 - sum(1, 63)) & 0xff"
+
+
+[protocols.vgnRy.pre.rx]
+length = 65
+timeoutMs = 400
+attempts = 1
+
+[protocols.vgnRy.pre.take]
+offset = 5
+
+
+[[protocols.vgnRy.pre]]
+desc = "F6 切到 2.4G"
+
+[protocols.vgnRy.pre.tx]
+length = 65
+reportId = "00"
+
+[protocols.vgnRy.pre.tx.bytes]
+"1" = "f6"
+"2" = "05"
+
+[protocols.vgnRy.pre.tx.checksum]
+put = 64
+expr = "(255 - sum(1, 63)) & 0xff"
+
+
+
+[protocols.vgnRy.tx]
+length = 65
+reportId = "00"
+
+[protocols.vgnRy.tx.bytes]
+"1" = "f7"
+
+[protocols.vgnRy.tx.checksum]
+put = 64
+expr = "(255 - sum(1, 63)) & 0xff"
+
+
+[protocols.vgnRy.rx]
+length = 65
+timeoutMs = 400
+attempts = 3
+
+[protocols.vgnRy.battery]
+expr = "b[3]"
+min = 0
+max = 100
+valid = "b[5] != 1 && b[1] != 0"
+
+
+[protocols.yongjiaxin]
+desc = "Yongjiaxin 鼠标族：65 字节 Output Report，0x55 头 + 反码 CRC；ED 唤醒 → 30 读电量"
+transport = "output"
+note = "官方 VGN HUB / VgnHidProvider 的 Yongjiaxin 族（Dragonfly 3 SE/Pro、Y2 V2 Pro/Plus、F1 V2 Pro/SE/Plus）。CRC=85-(Σpayload[0..62]&0xFF)。未实机验证。"
+
+[protocols.yongjiaxin.match]
+usagePage = "FF01"
+usage = "0010"
+outputLength = 65
+
+[[protocols.yongjiaxin.pre]]
+desc = "ED 唤醒"
+
+[protocols.yongjiaxin.pre.tx]
+length = 65
+reportId = "00"
+delayMs = 50
+
+[protocols.yongjiaxin.pre.tx.bytes]
+"1" = "55"
+"2" = "ed"
+
+[protocols.yongjiaxin.pre.tx.checksum]
+put = 64
+expr = "(85 - sum(1, 63)) & 0xff"
+
+
+
+[protocols.yongjiaxin.tx]
+length = 65
+reportId = "00"
+
+[protocols.yongjiaxin.tx.bytes]
+"1" = "55"
+"2" = "30"
+
+[protocols.yongjiaxin.tx.checksum]
+put = 64
+expr = "(85 - sum(1, 63)) & 0xff"
+
+
+[protocols.yongjiaxin.rx]
+length = 65
+timeoutMs = 400
+attempts = 3
+
+[protocols.yongjiaxin.battery]
+expr = "if(b[1] == 0x55 && b[2] == 0x30, b[9], b[8])"
+min = 0
+max = 100
+valid = "(b[1] == 0x55 && b[2] == 0x30) || (b[0] == 0x55 && b[1] == 0x30)"
+
+[[protocols.yongjiaxin.fields]]
+name = "charging"
+expr = "if(b[1] == 0x55 && b[2] == 0x30, b[10], b[9]) == 1"
+
+
+[protocols.vgnLdMs]
+desc = "VGN LD 鼠标族：34 字节 Output Report（Report A0），Cmd 02/25 读电量，反码 CRC"
+transport = "output"
+note = "官方 VGN HUB / VgnHidProvider 的 VgnLdMs 族（Dragonfly F1 V2 Extreme、Falcon3 Extreme/Extreme+）。充电状态固件不单独回，界面显示未知。未实机验证。"
+
+[protocols.vgnLdMs.match]
+usagePage = "FFA0"
+usage = "0002"
+outputLength = 34
+
+[protocols.vgnLdMs.tx]
+length = 34
+reportId = "A0"
+
+[protocols.vgnLdMs.tx.bytes]
+"1" = "02"
+"2" = "25"
+
+[protocols.vgnLdMs.tx.checksum]
+put = 33
+expr = "(255 - sum(1, 33)) & 0xff"
+
+
+[protocols.vgnLdMs.rx]
+length = 33
+timeoutMs = 400
+attempts = 3
+
+[protocols.vgnLdMs.battery]
+expr = "if(b[1] == 2 && b[2] == 0x25, b[3], b[2])"
+min = 0
+max = 100
+valid = "(b[1] == 2 && b[2] == 0x25) || (b[0] == 2 && b[1] == 0x25)"
+
+
+[protocols.vgnKc2]
+desc = "VGN KC2 鼠标族：21 字节 Output Report（Report B3），Cmd 06 读电量"
+transport = "output"
+note = "官方 VGN HUB / VgnHidProvider 的 VgnKc2 族（Dragonfly F1 V5 Turbo+ 等）。电量低 7 位、充电为最高位。未实机验证。"
+
+[protocols.vgnKc2.match]
+usagePage = "FFC1"
+usage = "0001"
+outputLength = 21
+
+[protocols.vgnKc2.tx]
+length = 21
+reportId = "B3"
+
+[protocols.vgnKc2.tx.bytes]
+"1" = "06"
+
+
+[protocols.vgnKc2.rx]
+length = 21
+timeoutMs = 400
+attempts = 3
+
+[protocols.vgnKc2.battery]
+expr = "if(b[1] == 6, b[20], b[19]) & 0x7f"
+min = 0
+max = 100
+valid = "b[1] == 6 || b[0] == 6"
+
+[[protocols.vgnKc2.fields]]
+name = "charging"
+expr = "((if(b[1] == 6, b[20], b[19])) & 0x80) != 0"
+
+
+[protocols.beken64]
+desc = "Beken/ATK 64 字节键盘端点：Report 04 + 请求序号 + 0x1A 读电量"
+transport = "output"
+note = "实测 VGN S99（320F:5055，FF1C/0092，64/64 字节端点）：回包 b[0]=Report ID 4、b[1..2] 回显请求序号、b[3]=0x1A、b[8]=电量、b[9]=充电码。同族 ATK / VGN 键盘共用。"
+
+[protocols.beken64.match]
+usagePage = "FF1C"
+usage = "0092"
+inputLength = 64
+outputLength = 64
+featureLength = 0
+
+[protocols.beken64.tx]
+length = 64
+reportId = "04"
+delayMs = 10
+
+[protocols.beken64.tx.bytes]
+"1" = "01"
+"2" = "00"
+"3" = "1a"
+
+
+[protocols.beken64.rx]
+length = 64
+timeoutMs = 600
+attempts = 4
+intervalMs = 40
+
+[[protocols.beken64.rx.match]]
+offset = 0
+equals = "04"
+
+[[protocols.beken64.rx.match]]
+offset = 3
+equals = "1a"
+
+
+[protocols.beken64.battery]
+expr = "b[8]"
+min = 0
+max = 100
+
+[[protocols.beken64.fields]]
+name = "charging"
+expr = "b[9] == 1"
+note = "b[9]==1 充电中；b[9]==2 表示在线（有线/已充满）"
+
+[protocols.beken64.sample]
+rx = "04 01 00 1a 00 00 00 00 64 02 00"
+
+[protocols.beken64.sample.expect]
+battery = 100
+charging = false
+
+
+
+[protocols.weisheng]
+desc = "Weisheng 键盘族：Report 04，7 字节请求 [0,0,26,6,0,0,0]，回包 b[2]==26 时电量在 b[7]"
+transport = "output"
+note = "官方 VGN HUB / VgnHidProvider 的 Weisheng 族（VGN S99、S87、VXE75 等键盘）；未实机验证，S99 目前走已实测的 beken64。"
+
+[protocols.weisheng.match]
+usagePage = "FF01"
+usage = "0001"
+outputLength = 7
+featureLength = 0
+
+[protocols.weisheng.tx]
+length = 7
+reportId = "04"
+
+[protocols.weisheng.tx.bytes]
+"1" = "00"
+"2" = "1a"
+"3" = "06"
+
+
+[protocols.weisheng.rx]
+length = 16
+timeoutMs = 400
+attempts = 4
+intervalMs = 30
+
+[[protocols.weisheng.rx.match]]
+offset = 0
+equals = "04"
+
+[[protocols.weisheng.rx.match]]
+offset = 2
+equals = "1a"
+
+
+[protocols.weisheng.battery]
+expr = "b[7]"
+min = 0
+max = 100
+
+[[protocols.weisheng.fields]]
+name = "charging"
+expr = "b[8] != 0"

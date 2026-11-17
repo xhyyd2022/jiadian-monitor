@@ -143,7 +143,7 @@ impl<'de> Deserialize<'de> for VidPid {
     }
 }
 
-// ---------------------------------------------------------------- index.json
+// ---------------------------------------------------------------- index.toml
 
 // 这些结构只承载 JSON 内容，部分字段是给人看的说明 / 供后续使用，不强求都读到。
 #[allow(dead_code)]
@@ -542,7 +542,7 @@ mod tests {
     }
 
     fn load_index() -> Index {
-        let p = data_dir().join("index.json");
+        let p = data_dir().join("index.toml");
         let src = std::fs::read_to_string(&p)
             .unwrap_or_else(|e| panic!("读不到 {}：{e}", p.display()));
         serde_json::from_str(&src).unwrap_or_else(|e| panic!("{} 解析失败：{e}", p.display()))

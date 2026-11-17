@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "jiadian-monitor",
+        "title": "佳点监控",
         "width": 780,
         "height": 540,
         "resizable": false,

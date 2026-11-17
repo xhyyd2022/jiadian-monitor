@@ -104,6 +104,9 @@ jobs:
           foreach ($f in @('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
             if (Test-Path $f) { Copy-Item $f $out -Force }
           }
+          # 旧版 JSON 协议清理脚本：覆盖安装的用户运行一次即可迁移到 TOML
+          $clearOld = Join-Path 'scripts' '清除旧版协议.cmd'
+          if (Test-Path $clearOld) { Copy-Item $clearOld $out -Force }
 
           Compress-Archive -Path "$out/*" -DestinationPath $zip -Force
           Get-ChildItem $zip | Select-Object Name, Length

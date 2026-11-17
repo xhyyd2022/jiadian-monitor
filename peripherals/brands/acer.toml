@@ -1,0 +1,78 @@
+# 佳点监控 · 宏碁（acer）外设协议（TOML，支持注释）
+# 说明：OMR 系列。无线接收器 249A:5C2F、有线 248A:5D2E/5E2E。33/33 字节中断端点。无线下 byte[15] 会漂移，充电状态不可信。
+# 匹配/帧/校验规则改这里；界面点「刷新」会重新读取。
+
+brand = "acer"
+name = "宏碁"
+note = "OMR 系列。无线接收器 249A:5C2F、有线 248A:5D2E/5E2E。33/33 字节中断端点。无线下 byte[15] 会漂移，充电状态不可信。"
+default = "omr33"
+
+[protocols]
+[protocols.omr33]
+desc = "33 字节中断：发 00 10 00…，回包里 [14] 是电量"
+transport = "output"
+note = "无线接收器下 byte[15] 会漂移，所以这里故意不写 charging —— 拿不到就不猜，界面会显示未知。"
+
+[protocols.omr33.match]
+usagePage = "FF01"
+usage = "0010"
+inputLength = 33
+outputLength = 33
+
+[protocols.omr33.tx]
+length = 33
+reportId = "00"
+
+[protocols.omr33.tx.bytes]
+"1" = "10"
+"2" = "00"
+
+[protocols.omr33.tx.checksum]
+put = 32
+expr = "sum(0, 31) & 0xff"
+
+
+[protocols.omr33.rx]
+length = 33
+timeoutMs = 500
+attempts = 3
+
+[[protocols.omr33.rx.match]]
+offset = 0
+equals = "00"
+
+[[protocols.omr33.rx.match]]
+offset = 1
+equals = "10"
+
+[[protocols.omr33.rx.match]]
+offset = 3
+equals = "01"
+
+
+[protocols.omr33.battery]
+expr = "b[14]"
+min = 1
+max = 100
+
+[[protocols.omr33.fields]]
+name = "model"
+note = "回包里 4 字节 ASCII 设备 id，如 R332"
+
+[protocols.omr33.fields.ascii]
+offset = 5
+length = 4
+
+
+[[protocols.omr33.fields]]
+name = "firmware"
+expr = "b[9] | (b[10] << 8)"
+min = 0
+max = 65535
+
+[protocols.omr33.sample]
+rx = "00 10 00 01 0b 52 33 33 32 01 00 00 00 00 4b 00"
+
+[protocols.omr33.sample.expect]
+battery = 75
+model = "R332"

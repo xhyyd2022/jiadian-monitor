@@ -170,6 +170,18 @@ html.theme-switching *::after {
   transition: none !important;
 }
 
+/* 系统开启“减少动态效果”时，不播放过渡/动画（不改变默认视觉，只关运动） */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* ---------------- 窗口 / 标题栏 / 侧栏 ---------------- */
 .app {
   position: relative;

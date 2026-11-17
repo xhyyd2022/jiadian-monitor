@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { Icon } from "@iconify/vue";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -99,7 +99,15 @@ function onPressDown(fn: () => void, key = "default") {
   };
 }
 
+let warnTimer: number | undefined;
+function clearWarnTimer() {
+  if (warnTimer) {
+    window.clearTimeout(warnTimer);
+    warnTimer = undefined;
+  }
+}
 function dismissWarn() {
+  clearWarnTimer();
   warnDismissed.value = true;
 }
 
@@ -111,6 +119,18 @@ const partialWarn = computed(() => {
     ? `其中 ${n} 台未匹配协议，电量暂不可读；其他设备读数不受影响。`
     : "部分 HID 设备未收录协议，电量暂不可读；已识别设备的读数不受影响。";
   return { title: "部分设备未支持", sub };
+});
+
+// 只在本次启动后展示一次：出现后静默自动收起，不再用任何提示打扰用户；
+// 手动刷新也不会重新弹出（除非重启应用）。
+watch(partialWarn, (v) => {
+  if (!v) return;
+  if (warnDismissed.value) return;
+  clearWarnTimer();
+  warnTimer = window.setTimeout(() => {
+    warnDismissed.value = true;
+    warnTimer = undefined;
+  }, 6000);
 });
 
 
@@ -164,6 +184,8 @@ function deviceKind(r: Reading): "keyboard" | "mouse" | "headset" | "other" {
 
 /// 读取状态：只给用户能看懂的五种（已读取 / 休眠中 / 可能休眠·重试中 / 协议未匹配 / 已断开）
 function stateInfo(r: Reading): { tone: "ok" | "warn" | "bad" | "idle"; icon: string; text: string } {
+  // 被厂商上位机/驱动独占：不是休眠、也不是断开，单独说明，避免用户误判。
+  if (r.state === "busy") return { tone: "warn", icon: "line-md:alert-circle", text: "被其他程序占用" };
   if (!r.supported) return { tone: "idle", icon: "line-md:question-circle", text: "协议未匹配" };
   if (!r.online || r.stale) return { tone: "bad", icon: "line-md:close-circle", text: "已断开" };
   switch (r.state) {
@@ -185,6 +207,8 @@ function stateInfo(r: Reading): { tone: "ok" | "warn" | "bad" | "idle"; icon: st
 /// 状态悬停说明：把“为什么读不到”讲清楚，不只给一个状态词
 function rowHint(r: Reading): string {
   const info = stateInfo(r);
+  if (r.state === "busy")
+    return "设备正被官方上位机/厂商工具独占，暂时读不到电量；关闭对方或稍等会自动恢复。休眠的设备通常还能打开，只是读数超时。";
   if (!r.supported) return `协议未匹配：认得品牌「${r.brand || "未知"}」，但 brands/ 里没有匹配该端点的档位，电量无法读取。`;
   if (!r.online || r.stale) return "设备不在线或读数已过期；重新连接后会自动恢复。";
   if (r.state === "sleeping") return "设备省电休眠，读数暂停；操作一下设备或点「刷新」会尝试唤醒。";
@@ -321,8 +345,6 @@ async function refresh(force = false) {
       : await invoke<Snapshot>("peripherals_state");
     if (force) {
       setMsg("");
-      // 手动刷新重新展示提示条（关闭只在本次会话展示中生效）
-      warnDismissed.value = false;
     }
     // 目录标签 / 可执行文件名后端随快照给出，第一次拿到就记下来
     if (!dirLabel.value && snap.value?.dirLabel) dirLabel.value = snap.value.dirLabel;
@@ -360,6 +382,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (timer) clearInterval(timer);
+  clearWarnTimer();
 });
 </script>
 
@@ -504,7 +527,7 @@ onUnmounted(() => {
         <Icon :icon="snap && !snap.ok ? 'line-md:close-circle' : 'line-md:monitor-off'" class="pd-empty-ic" />
         <p class="pd-empty-t">{{ snap && !snap.ok ? "协议库读取失败，暂时无法列出设备" : "没有识别到已收录的外设" }}</p>
         <p class="pd-empty-s">
-          插上鼠标 / 键盘 / 耳机；或在 <code>peripherals/index.json</code> 的 devices 里补一条 VID/PID。
+          插上鼠标 / 键盘 / 耳机；或在 <code>peripherals/index.toml</code> 的 devices 里补一条 VID/PID。
           协议细节见下方「高级：协议与设备详情」。
         </p>
         <el-button v-if="!snap || snap.ok" @click="openDir">
@@ -575,7 +598,7 @@ onUnmounted(() => {
             <div class="pd-adv-t">自定义协议（纯 JSON）</div>
             <ol class="pd-steps">
               <li><code>{{ exeName || "jiadian-monitor.exe" }} --peripherals-hid</code> 查端点。</li>
-              <li><code>index.json</code> 加 <code>vid</code>/<code>pid</code> → <code>brand</code>。</li>
+              <li><code>index.toml</code> 加 <code>vid</code>/<code>pid</code> → <code>brand</code>。</li>
               <li><code>brands/&lt;品牌&gt;.json</code> 写读法与电量字节。</li>
               <li><code>--peripherals-selftest</code> 用真实回包自检。</li>
             </ol>
@@ -610,6 +633,8 @@ onUnmounted(() => {
           id="pd-rename-input"
           ref="renameInput"
           v-model="draft"
+          autocomplete="off"
+          spellcheck="false"
           maxlength="24"
           show-word-limit
           clearable

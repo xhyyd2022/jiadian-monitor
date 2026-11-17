@@ -121,15 +121,15 @@ onUnmounted(stopDrag);
     @lostpointercapture="onPointerEnd"
   >
     <div class="tb-brand">
-      <span class="tb-logo"><img :src="appIcon" alt="佳点监控" /></span>
+      <span class="tb-logo"><img :src="appIcon" alt="" /></span>
       <span class="tb-name">佳点监控</span>
       <span class="tb-ver">V1PRO / V2</span>
     </div>
     <div class="tb-btns">
-      <button class="tb-btn" @click="appWindow.minimize()" title="最小化">
+      <button class="tb-btn" type="button" aria-label="最小化窗口" title="最小化" @click="appWindow.minimize()">
         <Icon icon="line-md:minus" />
       </button>
-      <button class="tb-btn tb-close" @click="$emit('close')" title="关闭">
+      <button class="tb-btn tb-close" type="button" aria-label="关闭窗口" title="关闭" @click="$emit('close')">
         <Icon icon="line-md:close" />
       </button>
     </div>

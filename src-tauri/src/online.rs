@@ -179,7 +179,8 @@ fn parse_url(table: &toml::Table, key: &str) -> Result<Option<String>, String> {
     validate_url(s, &format!("[{key}].url"))
 }
 
-/// URL 校验：https:// 或本机回环 http（调试用）；拒绝账号密码 / 空白 / 控制字符。
+/// URL 校验：https:// 任意站点；http:// 仅限本机与局域网地址（设备面板常用局域网 IP）；
+/// 拒绝账号密码 / 空白 / 控制字符。
 fn validate_url(raw: &str, field: &str) -> Result<Option<String>, String> {
     let s = raw.trim();
     if s.is_empty() {
@@ -201,7 +202,7 @@ fn validate_url(raw: &str, field: &str) -> Result<Option<String>, String> {
     };
     if scheme.is_empty() {
         return Err(format!(
-            "{field} 只允许 https:// 或 http://localhost / http://127.0.0.1"
+            "{field} 只允许 https:// 或 http://（仅本机/局域网地址）"
         ));
     }
     let authority = rest.split('/').next().unwrap_or(rest);
@@ -212,14 +213,37 @@ fn validate_url(raw: &str, field: &str) -> Result<Option<String>, String> {
         return Err(format!("{field} 不允许带账号密码"));
     }
     if !is_https {
-        let host = host_of(authority).to_ascii_lowercase();
-        if host != "localhost" && host != "127.0.0.1" && host != "[::1]" {
+        let host = host_of(authority);
+        if !is_private_host(host) {
             return Err(format!(
-                "{field} 只允许 https://（本机调试可用 http://localhost / http://127.0.0.1）"
+                "{field} 的 http:// 仅支持本机或局域网地址（localhost / 127.x / 10.x / 172.16-31.x / 192.168.x / 169.254.x / ::1 / fc00::/7 / fe80::/10）；公网请用 https://"
             ));
         }
     }
     Ok(Some(s.to_string()))
+}
+
+/// http:// 只放行本机/局域网地址：设备自带面板通常是 192.168.x / 10.x，
+/// 公网 http 一律拒绝（也避免在线素材被当成任意站点的明文跳板）。
+fn is_private_host(host: &str) -> bool {
+    use std::net::IpAddr;
+    let h = host.trim_matches(|c| c == '[' || c == ']').to_ascii_lowercase();
+    if h == "localhost" {
+        return true;
+    }
+    if let Ok(ip) = h.parse::<IpAddr>() {
+        return match ip {
+            IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+            IpAddr::V6(v6) => {
+                let seg = v6.segments();
+                v6.is_loopback()
+                    || (seg[0] & 0xfe00) == 0xfc00 // fc00::/7 unique local
+                    || (seg[0] & 0xffc0) == 0xfe80 // fe80::/10 link local
+            }
+        };
+    }
+    // mDNS 主机名（如 device.local）只在本机局域网有意义；仍只允许 http。
+    h.ends_with(".local")
 }
 
 /// 从 `host[:port]` 里取 host（兼容 `[::1]:8766`）。
@@ -482,6 +506,12 @@ mod tests {
         );
         assert!(validate_url("http://127.0.0.1/x", "u").unwrap().is_some());
         assert!(validate_url("http://example.com/x", "u").is_err());
+        assert!(validate_url("http://192.168.100.1:3002/#/", "u").is_ok());
+        assert!(validate_url("http://10.0.0.5/a", "u").is_ok());
+        assert!(validate_url("http://172.16.3.9/a", "u").is_ok());
+        assert!(validate_url("http://172.32.0.1/a", "u").is_err());
+        assert!(validate_url("http://[fd00::1]/a", "u").is_ok());
+        assert!(validate_url("http://[fe80::1]/a", "u").is_ok());
         assert!(validate_url("ftp://example.com/x", "u").is_err());
         assert!(validate_url("https://user:pw@example.com/", "u").is_err());
         assert!(validate_url("  ", "u").unwrap().is_none());

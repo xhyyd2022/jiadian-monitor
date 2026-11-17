@@ -149,7 +149,26 @@ function cancelEdit(): void {
 }
 
 /// 与后端同规则的本地预校验（只做即时提示，最终仍以后端校验为准）：
-/// https:// 任意站点；http:// 只允许 localhost / 127.0.0.1；不允许带账号密码。
+/// https:// 任意站点；http:// 仅限本机/局域网地址；不允许带账号密码。
+/// 本机/局域网地址判定：localhost、.local、127.x、10.x、172.16-31.x、192.168.x、169.254.x、
+/// ::1、fc00::/7、fe80::/10。与后端 `online::is_private_host` 保持一致。
+function isPrivateHost(hostname: string): boolean {
+  const h = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (h === "localhost" || h.endsWith(".local")) return true;
+  if (h === "::1") return true;
+  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 127 || a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+    return false;
+  }
+  if (h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe8") || h.startsWith("fe9") || h.startsWith("fea") || h.startsWith("feb")) return true;
+  return false;
+}
+
 function urlIssue(value: string): string {
   const raw = value.trim();
   if (!raw) return "";
@@ -161,8 +180,8 @@ function urlIssue(value: string): string {
   }
   if (url.username || url.password) return "不能带账号密码";
   if (url.protocol === "https:") return "";
-  if (url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1")) return "";
-  return "只支持 https:// 或 http://localhost / http://127.0.0.1";
+  if (url.protocol === "http:" && isPrivateHost(url.hostname)) return "";
+  return "http:// 仅支持本机或局域网地址（如 http://192.168.1.10:3002/）";
 }
 
 /// 标题 / 描述的单字段校验：失焦时立刻反馈，不只等点保存。
@@ -422,6 +441,8 @@ onUnmounted(() => clearTimeout(listTimer));
             <el-input
               ref="titleInput"
               v-model="title"
+              aria-label="素材标题"
+              autocomplete="off"
               maxlength="40"
               placeholder="例如：天气面板"
               :disabled="busy"
@@ -437,6 +458,8 @@ onUnmounted(() => clearTimeout(listTimer));
             <el-input
               v-model="description"
               type="textarea"
+              aria-label="素材描述"
+              autocomplete="off"
               :rows="2"
               maxlength="2000"
               placeholder="可留空，仅用于界面展示"
@@ -460,6 +483,8 @@ onUnmounted(() => clearTimeout(listTimer));
                 <el-input
                   ref="v1pInput"
                   v-model="v1p"
+                  aria-label="V1P 页面地址"
+                  autocomplete="off"
                   spellcheck="false"
                   placeholder="https://example.com/panel/v1p/"
                   :disabled="busy"
@@ -475,6 +500,8 @@ onUnmounted(() => clearTimeout(listTimer));
                 <el-input
                   ref="v2Input"
                   v-model="v2"
+                  aria-label="V2 页面地址"
+                  autocomplete="off"
                   spellcheck="false"
                   placeholder="https://example.com/panel/v2/"
                   :disabled="busy"
@@ -488,8 +515,9 @@ onUnmounted(() => clearTimeout(listTimer));
               <Icon icon="line-md:close-circle" /><span>{{ urlGroupError }}</span>
             </p>
             <p class="hint">
-              只接受 <code>https://</code>（任意站点）或 <code>http://localhost</code> / <code>http://127.0.0.1</code>；
-              不要带账号密码。在线页面需自行从 <code>http://127.0.0.1:8766</code> 取数据。
+              只接受 <code>https://</code>（任意站点）或 <code>http://</code> 的本机/局域网地址
+              （如 <code>http://192.168.1.10:3002/</code>）；不要带账号密码。
+              在线页面需自行从 <code>http://127.0.0.1:8766</code> 取数据。
             </p>
           </div>
         </el-form>

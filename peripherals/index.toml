@@ -1,0 +1,1111 @@
+# 佳点监控 · 外设协议索引（TOML，支持注释）
+# devices 里每条 = VID:PID → 品牌/协议/型号；brands 指向 brands/<品牌>.toml。
+# 本文件由旧版 JSON 迁移生成；改完保存，界面点「刷新」会重新读取。
+
+schema = 1
+
+[poll]
+intervalMs = 30000
+
+[brands]
+[brands.razer]
+name = "雷蛇"
+file = "brands/razer.toml"
+
+[brands.logitech]
+name = "罗技"
+file = "brands/logitech.toml"
+
+[brands.rapoo]
+name = "雷柏"
+file = "brands/rapoo.toml"
+
+[brands.valkyrie]
+name = "瓦尔基里"
+file = "brands/valkyrie.toml"
+
+[brands.compx]
+name = "CompX / OEM"
+file = "brands/compx.toml"
+
+[brands.mchose]
+name = "迈从"
+file = "brands/mchose.toml"
+
+[brands.acer]
+name = "宏碁"
+file = "brands/acer.toml"
+
+[brands.flydigi]
+name = "飞智"
+file = "brands/flydigi.toml"
+
+[brands.steelseries]
+name = "赛睿"
+file = "brands/steelseries.toml"
+
+[brands.edifier]
+name = "漫步者"
+file = "brands/edifier.toml"
+
+[brands.pixart]
+name = "PixArt 通用引擎"
+file = "brands/pixart.toml"
+
+[brands.vaxee]
+name = "VAXEE"
+file = "brands/vaxee.toml"
+
+[brands.endgame]
+name = "Endgame Gear"
+file = "brands/endgame.toml"
+
+[brands.nordic]
+name = "Nordic 通用引擎"
+file = "brands/nordic.toml"
+
+[brands.generic]
+name = "通用 HID"
+file = "brands/generic.toml"
+
+[brands.vgn]
+name = "VGN"
+file = "brands/vgn.toml"
+
+[brands.atk]
+name = "ATK / VXE"
+file = "brands/atk.toml"
+
+
+[[devices]]
+vid = "320F"
+pid = "5055"
+brand = "vgn"
+protocol = "beken64"
+model = "VGN S99"
+category = "Keyboard"
+note = "实测可用：64 字节 FF1C/0092 端点响应 ATK 0x1A 查询帧"
+
+[[devices]]
+vid = "320F"
+pid = "5088"
+brand = "vgn"
+protocol = "beken64"
+model = "VGN S99 2.4G"
+category = "Keyboard"
+note = "VGN HUB 设备表；未实机验证"
+
+[[devices]]
+vid = "3554"
+pid = "F502"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN F1 Pro"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "F503"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN F1 Pro"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "F505"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN F1 Pro Max"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "F506"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN F1 MOBA"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "F50A"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Mouse"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "F50B"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Mouse"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB3D"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Y2 Ultra"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB3E"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Y2 Ultra"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB49"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN UFO Pro Receiver"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB4A"
+brand = "vgn"
+protocol = "jm17"
+model = "UFO Pro"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB4B"
+brand = "vgn"
+protocol = "jm17"
+model = "UFO Ultra"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB50"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN F1 SE"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB51"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN F1 SE"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB52"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Y2 Master"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB53"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Y2 Master"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB54"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Y2 Pro Max"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB55"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Y2 Pro Max"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB56"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN F2 Master"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB57"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN F2 Master"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB58"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Dragonfly 3 Master Receiver"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "3554"
+pid = "FB59"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Dragonfly 3 Master"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "372E"
+pid = "10AC"
+brand = "vgn"
+protocol = "jm17_32"
+model = "VGN Dragonfly King"
+category = "Mouse"
+note = "VGN HUB 设备表；Report 20，未实机验证"
+
+[[devices]]
+vid = "372E"
+pid = "10AD"
+brand = "vgn"
+protocol = "jm17_32"
+model = "VGN Dragonfly King"
+category = "Mouse"
+note = "VGN HUB 设备表；Report 20，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "1028"
+brand = "vgn"
+protocol = "weisheng"
+model = "VGN S87"
+category = "Keyboard"
+note = "VGN HUB Weisheng 族；未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "1029"
+brand = "vgn"
+protocol = "weisheng"
+model = "VGN S87 2.4G"
+category = "Keyboard"
+note = "VGN HUB Weisheng 族；未实机验证"
+
+[[devices]]
+vid = "3837"
+pid = "4042"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly 3 Pro"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1001"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly 3 SE"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1003"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly 3 Pro"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1004"
+brand = "vgn"
+protocol = "vgnRy"
+model = "VGN Dragonfly 3 Pro Max"
+category = "Mouse"
+note = "VGN HUB RY 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1005"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Dragonfly 3 Master"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "391D"
+pid = "1008"
+brand = "vgn"
+protocol = "vgnRy"
+model = "VGN Dragonfly Y2 V2 Pro Max"
+category = "Mouse"
+note = "VGN HUB RY 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "100A"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly Y2 V2 Pro"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "100B"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly Y2 V2 Plus"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1017"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly F1 V2 Pro"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1018"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly F1 V2 Plus"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1019"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly F1 V2 SE"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "101B"
+brand = "vgn"
+protocol = "vgnLdMs"
+model = "VGN Dragonfly F1 V2 Extreme"
+category = "Mouse"
+note = "VGN HUB LD 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "101D"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN 蜻蜓3 MasterGT"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "391D"
+pid = "1026"
+brand = "vgn"
+protocol = "vgnKc2"
+model = "VGN Dragonfly F1 V5 Turbo+"
+category = "Mouse"
+note = "VGN HUB KC2 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1028"
+brand = "vgn"
+protocol = "vgnRy"
+model = "VGN Dragonfly 3 Ultra"
+category = "Mouse"
+note = "VGN HUB RY 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "102D"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Dragonfly F2 MasterGT"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "391D"
+pid = "102E"
+brand = "vgn"
+protocol = "vgnLdMs"
+model = "VGN Falcon3 Extreme"
+category = "Mouse"
+note = "VGN HUB LD 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "102F"
+brand = "vgn"
+protocol = "vgnRy"
+model = "VGN Dragonfly F1 V5 Ultra"
+category = "Mouse"
+note = "VGN HUB RY 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1032"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Dragonfly F2 MasterGT"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "391D"
+pid = "1034"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Dragonfly Y2 V2 MasterGT"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "391D"
+pid = "1037"
+brand = "vgn"
+protocol = "vgnLdMs"
+model = "VGN Falcon3 Extreme+"
+category = "Mouse"
+note = "VGN HUB LD 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A01"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly 3 SE"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A03"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly 3 Pro"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A04"
+brand = "vgn"
+protocol = "vgnRy"
+model = "VGN Dragonfly 3 Pro Max"
+category = "Mouse"
+note = "VGN HUB RY 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A05"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Dragonfly 3 Master"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "391D"
+pid = "1A08"
+brand = "vgn"
+protocol = "vgnRy"
+model = "VGN Dragonfly Y2 V2 Pro Max"
+category = "Mouse"
+note = "VGN HUB RY 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A09"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly Y2 V2 Pro"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A0A"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly Y2 V2 Plus"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A14"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly F1 V2 Pro"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A15"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly F1 V2 Plus"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A16"
+brand = "vgn"
+protocol = "yongjiaxin"
+model = "VGN Dragonfly F1 V2 SE"
+category = "Mouse"
+note = "VGN HUB Yongjiaxin 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A18"
+brand = "vgn"
+protocol = "vgnLdMs"
+model = "VGN Dragonfly F1 V2 Extreme"
+category = "Mouse"
+note = "VGN HUB LD 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A1A"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN 蜻蜓3 MasterGT"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "391D"
+pid = "1A23"
+brand = "vgn"
+protocol = "vgnKc2"
+model = "VGN Dragonfly F1 V5 Turbo+"
+category = "Mouse"
+note = "VGN HUB KC2 族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A25"
+brand = "vgn"
+protocol = "vgnRy"
+model = "VGN Dragonfly 3 Ultra"
+category = "Mouse"
+note = "VGN HUB RY 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A29"
+brand = "vgn"
+protocol = "vgnLdMs"
+model = "VGN Falcon3 Extreme+"
+category = "Mouse"
+note = "VGN HUB LD 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A2A"
+brand = "vgn"
+protocol = "vgnLdMs"
+model = "VGN Falcon3 Extreme"
+category = "Mouse"
+note = "VGN HUB LD 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A2B"
+brand = "vgn"
+protocol = "vgnRy"
+model = "VGN Dragonfly F1 V5 Ultra"
+category = "Mouse"
+note = "VGN HUB RY 鼠标族；未实机验证"
+
+[[devices]]
+vid = "391D"
+pid = "1A2F"
+brand = "vgn"
+protocol = "jm17"
+model = "VGN Dragonfly Y2 V2 MasterGT"
+category = "Mouse"
+note = "VGN HUB MouseEnc 族；未实机验证（除 391D:1A1A）"
+
+[[devices]]
+vid = "9981"
+pid = "6002"
+brand = "vgn"
+protocol = "jm17_32"
+model = "VGN Dragonfly King"
+category = "Mouse"
+note = "VGN HUB 设备表；Report 20，未实机验证"
+
+[[devices]]
+vid = "9981"
+pid = "7002"
+brand = "vgn"
+protocol = "jm17_32"
+model = "VGN Dragonfly King"
+category = "Mouse"
+note = "VGN HUB 设备表；Report 20，未实机验证"
+
+[[devices]]
+vid = "320F"
+pid = "*"
+brand = "atk"
+protocol = "beken64"
+model = "ATK / VXE Beken 键盘"
+category = "Keyboard"
+note = "ATK 320F 兜底；未实机验证"
+
+[[devices]]
+vid = "3554"
+pid = "F58A"
+brand = "atk"
+protocol = "jm17"
+model = "VXE R1 Pro Max 2.4G"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "3554"
+pid = "F58C"
+brand = "atk"
+protocol = "jm17"
+model = "VXE R1 Pro Max"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "3554"
+pid = "F58E"
+brand = "atk"
+protocol = "jm17"
+model = "VXE R1 SE+ 2.4G"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "3554"
+pid = "F58F"
+brand = "atk"
+protocol = "jm17"
+model = "VXE R1 SE+"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "*"
+brand = "atk"
+protocol = "jm17"
+model = "ATK / VXE 鼠标"
+category = "Mouse"
+note = "ATK 373B 兜底；未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "102E"
+brand = "atk"
+protocol = "jm17"
+model = "ATK F1 Ultimate"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "1031"
+brand = "atk"
+protocol = "jm17"
+model = "ATK F1 Ultimate 2.4G"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "103F"
+brand = "atk"
+protocol = "jm17"
+model = "VXE MAD R"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "1040"
+brand = "atk"
+protocol = "jm17"
+model = "VXE MAD R Major Plus 2.4G"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "104C"
+brand = "atk"
+protocol = "jm17"
+model = "VXE MAD R Major Plus"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "104D"
+brand = "atk"
+protocol = "jm17"
+model = "VXE MAD R 2.4G"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "1085"
+brand = "atk"
+protocol = "jm17"
+model = "VXE R1 SE+ 1K"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "10C9"
+brand = "atk"
+protocol = "jm17"
+model = "ATK X1 SE 2.4G"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "1107"
+brand = "atk"
+protocol = "jm17"
+model = "ATK X1 SE"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "1154"
+brand = "atk"
+protocol = "jm17"
+model = "ATK Zero"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "1155"
+brand = "atk"
+protocol = "jm17"
+model = "ATK Zero 2.4G"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "11B6"
+brand = "atk"
+protocol = "jm17"
+model = "ATK F1 Ultimate 2.0 / A9 Ultimate"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "11D9"
+brand = "atk"
+protocol = "jm17"
+model = "ATK F1 Ultimate 2.0 / A9 Ultimate 2.4G"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "373B"
+pid = "124F"
+brand = "atk"
+protocol = "jm17"
+model = "ATK Zero 2.4G"
+category = "Mouse"
+note = "Compx 公版 17 字节帧；Volt / HaloBattery / OpenMouse 公开资料，未实机验证"
+
+[[devices]]
+vid = "3554"
+pid = "*"
+brand = "compx"
+protocol = "jm17"
+model = "CompX OEM 鼠标"
+category = "Mouse"
+note = "3554 未精确命中的 OEM 鼠标；17 字节 MouseEnc 帧"
+
+[[devices]]
+vid = "3554"
+pid = "FA09"
+brand = "compx"
+protocol = "keyboard20"
+model = "3554:FA09 键盘（MCHOSE / AULA 共用 PID）"
+category = "Keyboard"
+note = "同 PID 多型号，按产品字符串区分；20 字节 FF02 键盘端点"
+
+[[devices]]
+vid = "1532"
+pid = "*"
+brand = "razer"
+protocol = "standard90"
+category = "Mouse"
+note = "90/91 字节私有控制帧，覆盖绝大多数雷蛇鼠标与键盘"
+
+[[devices]]
+vid = "046D"
+pid = "*"
+brand = "logitech"
+protocol = "hiddpp"
+category = "Mouse"
+note = "HID++ 4.x，需先 ping 拿到 Feature 索引"
+
+[[devices]]
+vid = "24AE"
+pid = "1205"
+brand = "rapoo"
+protocol = "telemetry7"
+category = "Mouse"
+note = "7 字节遥测帧（BB B0 51 头），已实机验证"
+
+[[devices]]
+vid = "24AE"
+pid = "*"
+brand = "rapoo"
+protocol = "telemetry19"
+category = "Mouse"
+note = "19 字节异步遥测，不主动查询"
+
+[[devices]]
+vid = "374A"
+pid = "*"
+brand = "valkyrie"
+protocol = "cmdF7"
+category = "Keyboard"
+
+[[devices]]
+vid = "374A"
+pid = "A272"
+brand = "valkyrie"
+protocol = "vk87max"
+model = "VK 87 Max V2"
+category = "Keyboard"
+note = "2.4G 接收器回包格式与其它型号不同"
+
+[[devices]]
+vid = "3151"
+pid = "*"
+brand = "valkyrie"
+protocol = "cmdF7"
+category = "Mouse"
+note = "同厂代工 VID"
+
+[[devices]]
+vid = "347A"
+pid = "*"
+brand = "valkyrie"
+protocol = "cmdF7"
+category = "Mouse"
+note = "同厂代工 VID"
+
+[[devices]]
+vid = "3837"
+pid = "1101"
+brand = "mchose"
+protocol = "a5v2"
+model = "迈从 A5 V2 Ultra"
+category = "Mouse"
+note = "短报文 0x11，载荷整体异或 0xFF"
+
+[[devices]]
+vid = "3837"
+pid = "3033"
+brand = "mchose"
+protocol = "g87v2"
+model = "MCHOSE G87 V2"
+category = "Keyboard"
+
+[[devices]]
+vid = "3837"
+pid = "*"
+brand = "mchose"
+protocol = "a5v2"
+category = "Mouse"
+
+[[devices]]
+vid = "258A"
+pid = "01BB"
+brand = "mchose"
+protocol = "z75s"
+model = "MCHOSE Z75S"
+category = "Keyboard"
+
+[[devices]]
+vid = "249A"
+pid = "5C2F"
+brand = "acer"
+protocol = "omr33"
+model = "宏碁 OMR 无线接收器"
+category = "Dongle"
+note = "无线下充电状态不可信，强制为 false"
+
+[[devices]]
+vid = "248A"
+pid = "5D2E"
+brand = "acer"
+protocol = "omr33"
+model = "宏碁 OMR 有线"
+category = "Mouse"
+
+[[devices]]
+vid = "248A"
+pid = "5E2E"
+brand = "acer"
+protocol = "omr33"
+model = "宏碁 OMR 有线"
+category = "Mouse"
+
+[[devices]]
+vid = "37D7"
+pid = "2502"
+brand = "flydigi"
+protocol = "ffa033"
+model = "飞智 GPA6"
+category = "Mouse"
+
+[[devices]]
+vid = "37D7"
+pid = "2401"
+brand = "flydigi"
+protocol = "ffa033"
+model = "飞智 Vader 5 Pro"
+category = "Mouse"
+
+[[devices]]
+vid = "37D7"
+pid = "*"
+brand = "flydigi"
+protocol = "ffa033"
+category = "Mouse"
+
+[[devices]]
+vid = "1038"
+pid = "2232"
+brand = "steelseries"
+protocol = "nova65"
+model = "Arctis Nova 5 / 5X"
+category = "Headset"
+
+[[devices]]
+vid = "1038"
+pid = "2253"
+brand = "steelseries"
+protocol = "nova65"
+model = "Arctis Nova 5X"
+category = "Headset"
+
+[[devices]]
+vid = "2D99"
+pid = "E049"
+brand = "edifier"
+protocol = "haloSpace"
+model = "花再 Halo Space"
+category = "Headset"
+note = "固件不回充电状态，界面显示未知"
+
+[[devices]]
+vid = "36A7"
+pid = "A887"
+brand = "pixart"
+protocol = "pixart83"
+model = "WLmouse Beast X"
+category = "Mouse"
+
+[[devices]]
+vid = "36A7"
+pid = "A868"
+brand = "pixart"
+protocol = "pixart83"
+model = "WLmouse Beast X Mini Pro"
+category = "Mouse"
+
+[[devices]]
+vid = "36A7"
+pid = "A880"
+brand = "pixart"
+protocol = "pixart83"
+model = "WLmouse Beast X Max"
+category = "Mouse"
+
+[[devices]]
+vid = "36A7"
+pid = "*"
+brand = "pixart"
+protocol = "pixart83"
+category = "Mouse"
+
+[[devices]]
+vid = "3057"
+pid = "*"
+brand = "vaxee"
+protocol = "xe64"
+category = "Mouse"
+note = "原始值每档 5%"
+
+[[devices]]
+vid = "3367"
+pid = "*"
+brand = "endgame"
+protocol = "xm64"
+category = "Mouse"
+
+[[devices]]
+vid = "1915"
+pid = "*"
+brand = "nordic"
+protocol = "nordic32"
+category = "Mouse"
+note = "Nordic 公版接收器，常见于小众无线鼠标"

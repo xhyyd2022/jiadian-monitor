@@ -1,0 +1,261 @@
+# 佳点监控 · ATK / VXE（atk）外设协议（TOML，支持注释）
+# 说明：ATK / VXE 鼠标走 Compx 公版 MouseEnc 17 字节帧（Report 08，Cmd 04，0x55 校验和）；键盘走 Beken 64 字节帧。旧的 atk17 档位保留但不再默认使用。
+# 匹配/帧/校验规则改这里；界面点「刷新」会重新读取。
+
+brand = "atk"
+name = "ATK / VXE"
+note = "ATK / VXE 鼠标走 Compx 公版 MouseEnc 17 字节帧（Report 08，Cmd 04，0x55 校验和）；键盘走 Beken 64 字节帧。旧的 atk17 档位保留但不再默认使用。"
+default = "jm17"
+
+[protocols]
+[protocols.jm17]
+desc = "VGN MouseEnc / Compx 共享 17 字节鼠标端点：Report 08，Cmd 0x04 读电量"
+transport = "output"
+note = "官方 VGN HUB 的 MouseEnc 族，也是 Compx/Pulsar/ATK/VXE 公版 17 字节帧：报告 ID 08 + 16 字节载荷，命令在 b[1]（0x04 电量），校验和 = (0x55 - sum(b[1..15]) - 8) & 0xFF。电量 b[6]、充电 b[7]、电压 u16be(8)。已在本机 VGN 蜻蜓3 MasterGT 实机验证。"
+
+[protocols.jm17.match]
+usagePage = "FF02"
+usage = "0002"
+inputLength = 17
+outputLength = 17
+
+[protocols.jm17.tx]
+desc = "BatteryLevel 0x04"
+length = 17
+reportId = "08"
+
+[protocols.jm17.tx.bytes]
+"1" = "04"
+
+[protocols.jm17.tx.checksum]
+put = 16
+expr = "(0x55 - sum(1, 15) - 8) & 0xff"
+
+
+[protocols.jm17.rx]
+length = 17
+timeoutMs = 400
+attempts = 4
+intervalMs = 30
+
+[[protocols.jm17.rx.match]]
+offset = 0
+equals = "08"
+
+[[protocols.jm17.rx.match]]
+offset = 1
+equals = "04"
+
+
+[protocols.jm17.battery]
+expr = "b[6]"
+min = 0
+max = 100
+valid = "b[16] == ((0x55 - sum(1, 15) - 8) & 0xff)"
+
+[[protocols.jm17.fields]]
+name = "charging"
+expr = "b[7] == 1"
+note = "b[7]==1 表示充电中"
+
+[[protocols.jm17.fields]]
+name = "millivolts"
+expr = "u16be(8)"
+min = 0
+max = 10000
+note = "b[8..9] 为电压高/低字节"
+
+[protocols.jm17.sample]
+rx = "08 04 00 00 00 02 55 00 0f cd 00 00 00 00 00 00 16"
+
+[protocols.jm17.sample.expect]
+battery = 85
+charging = false
+millivolts = 4045
+
+
+
+[protocols.jm17_32]
+desc = "VGN Dragonfly King 专用 17 字节帧：Report 20，Cmd 0x04 读电量"
+transport = "output"
+note = "官方 VGN HUB 的 MouseEnc 族；Dragonfly King 用 Report ID 0x20（32），其余字段同 jm17。未实机验证。"
+
+[protocols.jm17_32.match]
+usagePage = "FF02"
+usage = "0002"
+inputLength = 17
+outputLength = 17
+
+[protocols.jm17_32.tx]
+length = 17
+reportId = "20"
+
+[protocols.jm17_32.tx.bytes]
+"1" = "04"
+
+[protocols.jm17_32.tx.checksum]
+put = 16
+expr = "(0x55 - sum(1, 15) - 32) & 0xff"
+
+
+[protocols.jm17_32.rx]
+length = 17
+timeoutMs = 400
+attempts = 4
+intervalMs = 30
+
+[[protocols.jm17_32.rx.match]]
+offset = 0
+equals = "20"
+
+[[protocols.jm17_32.rx.match]]
+offset = 1
+equals = "04"
+
+
+[protocols.jm17_32.battery]
+expr = "b[6]"
+min = 0
+max = 100
+valid = "b[16] == ((0x55 - sum(1, 15) - 32) & 0xff)"
+
+[[protocols.jm17_32.fields]]
+name = "charging"
+expr = "b[7] == 1"
+note = "b[7]==1 表示充电中"
+
+[[protocols.jm17_32.fields]]
+name = "millivolts"
+expr = "u16be(8)"
+min = 0
+max = 10000
+note = "b[8..9] 为电压高/低字节"
+
+[protocols.jm17_32.sample]
+rx = "20 04 00 00 00 02 55 00 0f cd 00 00 00 00 00 00 00"
+
+[protocols.jm17_32.sample.expect]
+battery = 85
+charging = false
+millivolts = 4045
+
+
+
+[protocols.beken64]
+desc = "Beken/ATK 64 字节键盘端点：Report 04 + 请求序号 + 0x1A 读电量"
+transport = "output"
+note = "实测 VGN S99（320F:5055，FF1C/0092，64/64 字节端点）：回包 b[0]=Report ID 4、b[1..2] 回显请求序号、b[3]=0x1A、b[8]=电量、b[9]=充电码。同族 ATK / VGN 键盘共用。"
+
+[protocols.beken64.match]
+usagePage = "FF1C"
+usage = "0092"
+inputLength = 64
+outputLength = 64
+featureLength = 0
+
+[protocols.beken64.tx]
+length = 64
+reportId = "04"
+delayMs = 10
+
+[protocols.beken64.tx.bytes]
+"1" = "01"
+"2" = "00"
+"3" = "1a"
+
+
+[protocols.beken64.rx]
+length = 64
+timeoutMs = 600
+attempts = 4
+intervalMs = 40
+
+[[protocols.beken64.rx.match]]
+offset = 0
+equals = "04"
+
+[[protocols.beken64.rx.match]]
+offset = 3
+equals = "1a"
+
+
+[protocols.beken64.battery]
+expr = "b[8]"
+min = 0
+max = 100
+
+[[protocols.beken64.fields]]
+name = "charging"
+expr = "b[9] == 1"
+note = "b[9]==1 充电中；b[9]==2 表示在线（有线/已充满）"
+
+[protocols.beken64.sample]
+rx = "04 01 00 1a 00 00 00 00 64 02 00"
+
+[protocols.beken64.sample.expect]
+battery = 100
+charging = false
+
+
+
+[protocols.atk17]
+desc = "ATK F1 Ultimate 2.0 / Beken 17 字节中断端点（无 Feature 端点，禁止 WriteFile 前 DrainReports）"
+transport = "output"
+note = "8K dongle 只暴露中断端点，FeatureReportByteLength == 0，所以 match.featureLength 写 0。写指令前不要清空输入队列，会丢掉紧随其后的回复。"
+
+[protocols.atk17.match]
+usagePage = "FF02"
+usage = "0002"
+inputLength = 17
+outputLength = 17
+featureLength = 0
+productLike = "ATK"
+
+[protocols.atk17.tx]
+length = 17
+reportId = "08"
+
+[protocols.atk17.tx.bytes]
+"1" = "04"
+"2" = "00"
+"3" = "00"
+"4" = "00"
+"5" = "00"
+"6" = "00"
+
+[protocols.atk17.tx.checksum]
+put = 15
+expr = "(0x55 - sum(1, 15)) & 0xff"
+
+
+[protocols.atk17.rx]
+length = 17
+timeoutMs = 400
+attempts = 4
+
+[[protocols.atk17.rx.match]]
+offset = 1
+equals = "04"
+
+
+[protocols.atk17.battery]
+expr = "b[6]"
+min = 1
+max = 100
+
+[[protocols.atk17.fields]]
+name = "charging"
+expr = "b[7] == 1"
+
+[[protocols.atk17.fields]]
+name = "millivolts"
+expr = "u16be(8)"
+min = 0
+max = 10000
+
+[protocols.atk17.sample]
+rx = "08 04 00 00 00 02 4b 01 0f 5c"
+
+[protocols.atk17.sample.expect]
+battery = 75
+charging = true

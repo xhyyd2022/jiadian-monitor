@@ -188,6 +188,7 @@ const metrics = ref<BasicMetric[]>([]);
 const metricsAt = ref(0);
 const cpuLoadKeys = new Set(["cpu_load", "cpu_load_p", "cpu_load_e"]);
 let timer: number | undefined;
+let visibilityHandler: (() => void) | undefined;
 let refreshBusy = false;
 let refreshRevision = 0;
 let metricsDisposed = false;
@@ -1126,7 +1127,7 @@ const failureHint = computed(() =>
 /** 未运行时按钮为什么点不了：就地说明，不只靠 tooltip（H02 / G6） */
 const startBlockReason = computed(() => {
   if (renderActive.value) return "";
-  if (busy.value || ctlBusy.value) return "正在处理上一步操作，请稍候";
+  if (busy.value || ctlBusy.value) return "正在处理上一步操作，请稍候…";
   if (!selSerial.value) return "未连接屏幕设备：插好后点「刷新」再启动";
   if (themeMode.value === "online") {
     if (!onlineSources.value.length) return "";
@@ -1443,7 +1444,14 @@ onMounted(async () => {
   if (appDisposed) return;
   // 数据源自检：等启动流程安定后再查，LibreHardwareService 不在跑就弹窗引导
   setTimeout(checkDataSource, 2500);
-  timer = window.setInterval(refresh, 1000);
+  // 最小化/遮挡时不拉指标：每秒一次 IPC 在后台没有意义；恢复可见立刻补一次。
+  visibilityHandler = () => {
+    if (document.visibilityState === "visible") void refresh();
+  };
+  document.addEventListener("visibilitychange", visibilityHandler);
+  timer = window.setInterval(() => {
+    if (document.visibilityState === "visible") void refresh();
+  }, 1000);
   // 窗口尺寸日志：启动记一次；拖动停下 600ms 后记一次（供回写 tauri.conf.json）
   logWindowSize("启动");
   appWindow
@@ -1480,6 +1488,7 @@ onUnmounted(() => {
   metricsDisposed = true;
   refreshRevision++;
   if (timer) clearInterval(timer);
+  if (visibilityHandler) document.removeEventListener("visibilitychange", visibilityHandler);
   if (resizeTimer) clearTimeout(resizeTimer);
   unlistenResize?.();
   unlistenClose?.();
@@ -1514,7 +1523,7 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <div class="view" tabindex="0" aria-label="页面内容">
+        <div class="view" tabindex="0" role="region" aria-label="页面内容">
 
           <!-- ============ 首页 ============ -->
           <div v-show="page === 'home'" class="page home-page">
@@ -1568,7 +1577,7 @@ onUnmounted(() => {
                     </div>
                   </template>
                   <div class="preview" :style="{ aspectRatio: `${effSize.w} / ${effSize.h}` }">
-                    <canvas v-show="hasPreview" ref="previewCanvas" class="pv-canvas"></canvas>
+                    <canvas v-show="hasPreview" ref="previewCanvas" class="pv-canvas" role="img" aria-label="设备屏幕预览"></canvas>
                     <div v-if="!hasPreview" class="ph">{{ previewPlaceholder }}</div>
                   </div>
                   <div class="preview-foot" :title="`${previewName} · ${previewMeta}`">
@@ -1649,7 +1658,7 @@ onUnmounted(() => {
 
                   <div class="run-status">
                     <span class="dot" :class="{ ok: renderActive, warn: linkReconnecting }" aria-hidden="true"></span>
-                    <span class="run-text" :title="applying ? applyLine : runningLine">{{ applying ? applyLine : runningLine }}</span>
+                    <span class="run-text" role="status" aria-live="polite" :title="applying ? applyLine : runningLine">{{ applying ? applyLine : runningLine }}</span>
                     <el-button v-if="applying" type="primary" plain class="run-action" loading disabled>
                       {{ applyState === "switch" ? "切换中…" : "启动中…" }}
                     </el-button>

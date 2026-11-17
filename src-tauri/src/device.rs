@@ -21,6 +21,7 @@ fn with_device<T>(
     let running = pipeline::link_open();
     // 进入时先捕获**此刻**的链路代数：命令失败要释放链路时只能关这一代，
     // 绝不能无条件 `close_link()` —— 否则期间若新一轮管线已接管，会把新链路一起关掉。
+    let opened_gen_before = if running { None } else { pipeline::link_generation() };
     let running_gen = if running { pipeline::link_generation() } else { None };
     // 未接管时自己新开的链路代数（只有真新开才有值）。
     let mut opened_gen: Option<u64> = None;
@@ -52,11 +53,7 @@ fn with_device<T>(
         match pipeline::open_link(serial) {
             Ok(opened) => {
                 opened_gen = opened;
-                let r = pipeline::with_link(|l| f(l.dev()?));
-                if let Some(gen_id) = opened {
-                    pipeline::close_link_if_gen(gen_id);
-                }
-                r
+                pipeline::with_link(|l| f(l.dev()?))
             }
             Err(e) => Err(e),
         }
@@ -74,6 +71,14 @@ fn with_device<T>(
     }
     if running {
         pipeline::resume();
+    } else {
+        // 未运行时，命令用完必须把 USB 交还：包括 open_link 复用了已有句柄（返回 None）
+        // 的情况。只按代数关，且在命令期间没有新会话接管时才关，避免误伤刚启动的管线。
+        if let Some(gen_id) = opened_gen.or(opened_gen_before) {
+            if !pipeline::session_running() {
+                pipeline::close_link_if_gen(gen_id);
+            }
+        }
     }
     r
 }

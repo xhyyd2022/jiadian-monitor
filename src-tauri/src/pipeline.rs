@@ -66,10 +66,15 @@ struct SessionGuard {
 }
 impl Drop for SessionGuard {
     fn drop(&mut self) {
-        if let Some(owner) = self.owner.as_ref() { lifecycle().stop_session(owner.session.id); }
+        // 先把 LIVE 退出帧发出去、把 USB 句柄与移交租约归还，**最后**才把会话标记为 idle。
+        // 反过来会出现：新会话看到 previous_finished=true 立刻接管，但旧链路还没关 →
+        // 复用一个正在收尾的句柄，帧能写进去、屏幕却不刷新（只能再停一次才好）。
         if let Some(g) = self.link_gen.take() {
             send_exit_if_gen(g);
             close_link_if_gen(g);
+        }
+        if let Some(owner) = self.owner.as_ref() {
+            lifecycle().stop_session(owner.session.id);
         }
         drop(self.owner.take());
     }
@@ -260,7 +265,11 @@ pub fn start_prepared(
 
     // The session already exists during these bounded synchronous calls, so a
     // timeout/cancel can target this exact startup instead of a global latest.
-    guard.link_gen = match UsbLink::open(serial, w, h) {
+    let opened = UsbLink::open(serial, w, h);
+    // 只有 Ok(None) 才是“复用了同型号设备的现有句柄”；Err 是完全没拿到设备，
+    // 此时绝不能 adoption 别人（可能是另一台设备）的链路代数。
+    let reused = matches!(opened, Ok(None));
+    guard.link_gen = match opened {
         Ok(g) => g,
         Err(e) => {
             crate::logging::warn(&format!("USB 不可用，仅预览：{e}"));
@@ -268,6 +277,11 @@ pub fn start_prepared(
         }
     };
     session.check()?;
+    // 复用的句柄同样属于本会话的使用期：结束/停止时按代数释放，
+    // 否则全局 LINK 会一直把 USB 占在“未运行”状态。
+    if reused {
+        guard.link_gen = current_link_gen();
+    }
     let io_gen = current_link_gen();
     let session_id = session.id;
     let cancel = session.cancel.clone();
@@ -1043,7 +1057,11 @@ async fn run_supervised<F: FnMut(&[u8], u32, u32, u64)>(
                     target_serial
                 ));
                 let _reconnecting = ReconnectGuard::new();
-                if let Some(g) = current_link.lock().unwrap().take() {
+                // current_link 只在“本轮自己新开链路”时有值；复用了已有句柄时它是 None。
+                // 这种情况下若直接跳过关闭，`UsbLink::open` 会一直命中那个失效的旧句柄，
+                // 日志表现为「链路被其他操作复用，继续重试…」直到用户手动停止再启动。
+                let stale = current_link.lock().unwrap().take().or(io_gen);
+                if let Some(g) = stale {
                     close_link_if_gen(g);
                 }
                 let mut usb_fails = 0u32;
@@ -1648,6 +1666,11 @@ impl Drop for ReconnectGuard {
 
 pub fn usb_reconnecting() -> bool {
     USB_RECONNECTING.load(Ordering::SeqCst)
+}
+
+/// 当前是否有运行中的下发会话（用于设备命令收尾时决定能不能释放自己打开的链路）。
+pub fn session_running() -> bool {
+    lifecycle().snapshot().phase == crate::pipeline_lifecycle::Phase::Running
 }
 
 /// 接管设备（必要时先向 GUI 申请移交）。

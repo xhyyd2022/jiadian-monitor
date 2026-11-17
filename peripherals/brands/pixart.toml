@@ -1,0 +1,74 @@
+# 佳点监控 · PixArt 通用引擎（pixart）外设协议（TOML，支持注释）
+# 说明：CompX/PixArt 64 字节 Feature 0x83 通用套路：发 00 00 00 02 02 00 83，回包形如 A1 00 02 02 00 83 [chg] [pct]。覆盖 Lamzu / Pulsar / WLmouse / Attack Shark / Ajazz / Darmoshark / Glorious / Ninjutso / RAWM / Incott / Finalmouse / Keychron / Dareu 等一大批公版方案。
+# 匹配/帧/校验规则改这里；界面点「刷新」会重新读取。
+
+brand = "pixart"
+name = "PixArt 通用引擎"
+note = "CompX/PixArt 64 字节 Feature 0x83 通用套路：发 00 00 00 02 02 00 83，回包形如 A1 00 02 02 00 83 [chg] [pct]。覆盖 Lamzu / Pulsar / WLmouse / Attack Shark / Ajazz / Darmoshark / Glorious / Ninjutso / RAWM / Incott / Finalmouse / Keychron / Dareu 等一大批公版方案。"
+default = "pixart83"
+
+[protocols]
+[protocols.pixart83]
+desc = "64 字节 Feature 0x83 查询"
+transport = "feature"
+note = "回包特征串 A1 00 02 02 00 83 是固定的，后面跟 [充电] [电量]。有的型号先回 A0 帧（表示还没准备好），所以 attempts 给到 5 次。"
+
+[protocols.pixart83.match]
+featureLength = 64
+
+[protocols.pixart83.tx]
+length = 64
+reportId = "00"
+
+[protocols.pixart83.tx.bytes]
+"1" = "00"
+"2" = "00"
+"3" = "02"
+"4" = "02"
+"5" = "00"
+"6" = "83"
+
+
+[protocols.pixart83.rx]
+length = 64
+timeoutMs = 300
+attempts = 5
+intervalMs = 40
+note = "GetFeature 会先拿到 0xA0 等待帧，rx.skip 会丢掉它们继续重试"
+
+[[protocols.pixart83.rx.skip]]
+offset = 0
+equals = "a0"
+
+[[protocols.pixart83.rx.match]]
+offset = 0
+equals = "a1"
+
+[[protocols.pixart83.rx.match]]
+offset = 2
+equals = "02"
+
+[[protocols.pixart83.rx.match]]
+offset = 3
+equals = "02"
+
+[[protocols.pixart83.rx.match]]
+offset = 5
+equals = "83"
+
+
+[protocols.pixart83.battery]
+expr = "b[7]"
+min = 1
+max = 100
+
+[[protocols.pixart83.fields]]
+name = "charging"
+expr = "b[6] != 0"
+
+[protocols.pixart83.sample]
+rx = "a1 00 02 02 00 83 01 4b"
+
+[protocols.pixart83.sample.expect]
+battery = 75
+charging = true

@@ -81,7 +81,7 @@ pub fn exe_name() -> String {
         .unwrap_or_else(|| "jiadian-monitor.exe".to_string())
 }
 
-/// 读盘结果的缓存。键是「index.json + brands/ 下全部文件的 mtime+大小」。
+/// 读盘结果的缓存。键是「index.toml + brands/ 下全部文件的 mtime+大小」。
 struct Cache {
     stamp: String,
     loaded: Option<Arc<Loaded>>,
@@ -116,7 +116,7 @@ fn file_stamp(p: &Path) -> String {
 }
 
 fn dir_stamp(dir: &Path) -> String {
-    let mut parts = vec![file_stamp(&dir.join("index.json"))];
+    let mut parts = vec![file_stamp(&dir.join("index.toml"))];
     if let Ok(rd) = std::fs::read_dir(dir.join("brands")) {
         let mut v: Vec<String> = rd
             .filter_map(|e| e.ok())
@@ -137,17 +137,23 @@ fn dir_stamp(dir: &Path) -> String {
 
 fn load_dir(dir: &Path) -> Result<Loaded, String> {
     // 报错里只写文件名、不写绝对路径 —— 这些字符串会直接出现在界面上。
-    let p = dir.join("index.json");
-    let src = std::fs::read_to_string(&p).map_err(|e| format!("读不到 index.json：{e}"))?;
+    let p = dir.join("index.toml");
+    if !p.is_file() && dir.join("index.json").is_file() {
+        return Err(
+            "检测到旧版 JSON 协议库。新版只读取 TOML：请用新版覆盖安装后运行「清除旧版协议」，或手动删除 peripherals 下的 *.json"
+                .to_string(),
+        );
+    }
+    let src = std::fs::read_to_string(&p).map_err(|e| format!("读不到 index.toml：{e}"))?;
     let index: model::Index =
-        serde_json::from_str(&src).map_err(|e| format!("index.json 解析失败：{e}"))?;
+        toml::from_str(&src).map_err(|e| format!("index.toml 解析失败：{e}"))?;
 
     let mut brands = BTreeMap::new();
     let mut errors = Vec::new();
     for (key, r) in &index.brands {
         let bp = dir.join(&r.file);
         match std::fs::read_to_string(&bp) {
-            Ok(s) => match serde_json::from_str::<model::BrandFile>(&s) {
+            Ok(s) => match toml::from_str::<model::BrandFile>(&s) {
                 Ok(bf) => {
                     brands.insert(key.clone(), bf);
                 }
@@ -543,12 +549,14 @@ pub struct Reading {
 
 impl Reading {
     fn name_of(brand: &str, model: &str) -> String {
+        // 列表行下面已经单独显示品牌（`metaText`），名字里再带一遍会变成
+        // 「CompX / VGN / ATK VGN 蜻蜓3 MasterGT」这种又长又重复的前缀。
+        // 有型号就只显示型号；型号为空时才退回品牌名。
+        let model = model.trim();
         if model.is_empty() {
             brand.to_string()
-        } else if model.starts_with(brand) {
-            model.to_string()
         } else {
-            format!("{brand} {model}")
+            model.to_string()
         }
     }
 }
@@ -579,7 +587,7 @@ impl Snapshot {
         dir: String::new(),
         dir_label: String::new(),
         exe_name: String::new(),
-        poll_ms: 3000,
+        poll_ms: 30_000,
         devices: Vec::new(),
         errors: Vec::new(),
         updated_ms: 0,
@@ -588,8 +596,23 @@ impl Snapshot {
 
 static STATE: Mutex<Snapshot> = Mutex::new(Snapshot::EMPTY);
 
+/// 最近一次有人取外设快照的时间（毫秒）。没人看的时候轮询线程降频，
+/// 避免每 3 秒去开一次鼠标/键盘，和厂商上位机抢设备。
+static LAST_CONSUMER_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn touch_consumer() {
+    LAST_CONSUMER_MS.store(now_ms(), std::sync::atomic::Ordering::SeqCst);
+}
+
+/// `CreateFileW` 的 5/32：设备被别的进程以独占方式打开（厂商上位机、驱动或游戏软件）。
+/// 这不是休眠，也不该按“读不到”累计休眠次数。
+fn is_occupied(err: &str) -> bool {
+    err.contains("被独占") || err.contains("失败：5（") || err.contains("失败：32（")
+}
+
 /// 当前快照（不触发读设备）。
 pub fn snapshot() -> Snapshot {
+    touch_consumer();
     STATE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
@@ -977,6 +1000,12 @@ impl DevKey {
     }
 }
 
+/// 每台设备的轮询抖动（0–3s）：避免多只设备在同一秒被一起打开。
+fn jitter_for(dk: &DevKey) -> Duration {
+    let h = (dk.vid as u64) * 131 + (dk.pid as u64) * 31 + (now_ms() / 1000);
+    Duration::from_millis(h % 3000)
+}
+
 /// 连续失败几次判定为休眠。
 const SLEEP_STREAK: u32 = 3;
 /// 刚睡着的头一分钟按正常间隔探测：用户随手动一下鼠标就能立刻恢复。
@@ -1078,6 +1107,15 @@ impl Poller {
         }
     }
 
+    /// 用户点「刷新」：把所有设备标成立即到期，下一轮真的去读一次。
+    fn force_due(&mut self) {
+        let now = Instant::now();
+        for st in self.devs.values_mut() {
+            st.next_due = now;
+            st.asleep_since_ms = None;
+        }
+    }
+
     fn run_round(&mut self) -> Snapshot {
         let mut snap = Snapshot {
             updated_ms: now_ms(),
@@ -1097,7 +1135,9 @@ impl Poller {
         snap.dir = ld.dir.to_string_lossy().to_string();
         snap.dir_label = dir_label(&ld.dir);
         snap.exe_name = exe_name();
-        snap.poll_ms = ld.index.poll.interval_ms.max(500);
+        // 电量变化很慢：默认/最小 30 秒一轮；每轮打开设备读一次就关闭（Drop），
+        // 不在两次轮询之间持有 HID 句柄，避免和官方上位机长期抢设备。
+        snap.poll_ms = ld.index.poll.interval_ms.max(30_000);
         snap.ok = true;
         snap.errors = ld.errors.clone();
 
@@ -1294,9 +1334,27 @@ impl Poller {
                     reading.asleep_since_ms = None;
                     st.streak = 0;
                     st.ever_ok = true;
-                    st.next_due = now + base;
+                    // 每台设备错开 0–3s，避免同一秒集中打开多只设备、和官方上位机撞车。
+                    st.next_due = now + base + jitter_for(dk);
                 }
                 Err(e) => {
+                    // 被厂商上位机/驱动独占：既不是休眠也不是断开，单独标记并放慢探测，
+                    // 避免我们每 3 秒抢一次、把官方软件挤掉。
+                    if is_occupied(&e) {
+                        reading.online = false;
+                        reading.charging = None;
+                        if let Some(prev) = &st.last {
+                            reading.battery = prev.battery;
+                            reading.last_seen_ms = prev.last_seen_ms;
+                        }
+                        reading.stale = reading.battery.is_some();
+                        reading.state = "busy".into();
+                        reading.error = Some(e);
+                        st.next_due = now + base.max(Duration::from_millis(60_000));
+                        st.last = Some(reading.clone());
+                        snap.devices.push(reading);
+                        continue;
+                    }
                     st.streak = st.streak.saturating_add(1);
                     // 只有「曾经读到过」的设备才谈得上休眠；从没读到过是「读不到」。
                     let state = state_of(st.ever_ok, st.streak);
@@ -1418,7 +1476,7 @@ impl Poller {
             let extra = items.len().saturating_sub(6);
             items.truncate(6);
             snap.errors.push(format!(
-                "未收录的 HID 设备：{}{}。在 peripherals/index.json 的 devices 里补一条 vid/pid 就能开始识别",
+                "未收录的 HID 设备：{}{}。在 peripherals/index.toml 的 devices 里补一条 vid/pid 就能开始识别",
                 items.join("、"),
                 if extra > 0 {
                     format!(" 等 {} 个", items.len() + extra)
@@ -1452,6 +1510,7 @@ impl Poller {
 static FORCE: AtomicBool = AtomicBool::new(false);
 
 pub fn refresh() {
+    touch_consumer();
     FORCE.store(true, Ordering::SeqCst);
 }
 
@@ -1462,22 +1521,34 @@ pub fn spawn() {
         .spawn(move || {
             let mut poller = Poller::new();
             loop {
+                let forced = FORCE.swap(false, Ordering::SeqCst);
+                // 15s 内没人取过快照（界面没开外设页、面板也没请求）→ 不读设备，
+                // 只低频检查；有人打开后 500ms 内恢复（用户点刷新则立刻穿透）。
+                let idle_ms = now_ms().saturating_sub(
+                    LAST_CONSUMER_MS.load(std::sync::atomic::Ordering::SeqCst),
+                );
+                if !forced && idle_ms > 15_000 {
+                    std::thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+                if forced {
+                    // 强制重读盘：清掉缓存戳，并让所有设备立刻到期
+                    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                    c.stamp.clear();
+                    c.loaded = None;
+                    poller.force_due();
+                }
                 let started = Instant::now();
                 let snap = poller.run_round();
                 let interval = Duration::from_millis(snap.poll_ms.max(500));
                 publish(snap);
                 // 分小段睡，这样外部点刷新能在 200ms 内生效。
                 while started.elapsed() < interval {
-                    if FORCE.swap(false, Ordering::SeqCst) {
-                        // 强制重读盘：清掉缓存戳
-                        let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-                        c.stamp.clear();
-                        c.loaded = None;
+                    if FORCE.load(Ordering::SeqCst) {
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(200));
                 }
-                let _ = FORCE.swap(false, Ordering::SeqCst);
             }
         });
 }
@@ -1790,6 +1861,26 @@ pub fn selftest() -> (usize, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toml_protocol_library_loads() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("peripherals");
+        let ld = load_dir(&dir).expect("TOML 协议库应能加载");
+        assert!(ld.index.devices.len() >= 100, "devices 数量异常");
+        assert!(ld.brands.len() >= 17, "品牌文件数量异常");
+        assert!(ld.errors.is_empty(), "协议库有错误：{:?}", ld.errors);
+    }
+
+    #[test]
+    fn occupied_error_is_not_treated_as_sleep() {
+        // CreateFileW 的 5/32：被厂商上位机或驱动独占，不是休眠。
+        assert!(is_occupied("打开 HID 设备失败：5（5 = 被独占，例如厂商驱动或游戏软件占着）"));
+        assert!(is_occupied("打开 HID 设备失败：32（共享冲突）"));
+        assert!(!is_occupied("ReadFile(HID) 完成失败：31"));
+        assert!(!is_occupied("等待超时"));
+    }
 
     #[test]
     fn frames_build() {

@@ -1,0 +1,101 @@
+# 佳点监控 · 瓦尔基里（valkyrie）外设协议（TOML，支持注释）
+# 说明：0xF7 查询命令。回包有两种前导形态：标准 rx[0]=0x00 rx[1]=0x01 时载荷从下标 2 起；无前导 rx[0]=0x01 时从下标 1 起。下面按标准形态写，特例另开档位。
+# 匹配/帧/校验规则改这里；界面点「刷新」会重新读取。
+
+brand = "valkyrie"
+name = "瓦尔基里"
+note = "0xF7 查询命令。回包有两种前导形态：标准 rx[0]=0x00 rx[1]=0x01 时载荷从下标 2 起；无前导 rx[0]=0x01 时从下标 1 起。下面按标准形态写，特例另开档位。"
+default = "cmdF7"
+
+[protocols]
+[protocols.cmdF7]
+desc = "0xF7 查询，标准响应带 00 01 前导"
+transport = "output"
+note = "标准响应 rx[0]=0x00、rx[1]=0x01，所以载荷第 1 字节（电量）落在 b[3]。若你的型号回包电量位置不同，改 battery.expr 即可。"
+
+[protocols.cmdF7.match]
+inputLength = 64
+
+[protocols.cmdF7.tx]
+length = 64
+reportId = "00"
+
+[protocols.cmdF7.tx.bytes]
+"1" = "f7"
+
+[protocols.cmdF7.tx.checksum]
+put = 63
+expr = "sum(1, 62) & 0xff"
+
+
+[protocols.cmdF7.rx]
+length = 64
+timeoutMs = 400
+attempts = 3
+intervalMs = 40
+
+[[protocols.cmdF7.rx.match]]
+offset = 1
+equals = "01"
+
+
+[protocols.cmdF7.battery]
+expr = "b[3]"
+min = 1
+max = 100
+
+[protocols.cmdF7.sample]
+rx = "00 01 05 4b 00"
+
+[protocols.cmdF7.sample.expect]
+battery = 75
+
+
+
+[protocols.vk87max]
+desc = "VK 87 Max V2 的 2.4G 接收器：回 00 00 <batt> 00 00 00 01 01，必须从 b[2] 取"
+transport = "output"
+note = "这台的回包 rx[0]==0x00 且没有 0x01，如果按标准档位取 b[3] 会读到 0，所以单独一档。"
+
+[protocols.vk87max.match]
+inputLength = 64
+
+[protocols.vk87max.tx]
+length = 64
+reportId = "00"
+
+[protocols.vk87max.tx.bytes]
+"1" = "f7"
+
+[protocols.vk87max.tx.checksum]
+put = 63
+expr = "sum(1, 62) & 0xff"
+
+
+[protocols.vk87max.rx]
+length = 64
+timeoutMs = 400
+attempts = 3
+intervalMs = 40
+
+[[protocols.vk87max.rx.match]]
+offset = 0
+equals = "00"
+
+
+[protocols.vk87max.battery]
+expr = "b[2]"
+min = 1
+max = 100
+
+[[protocols.vk87max.fields]]
+name = "deviceType"
+expr = "b[7]"
+min = 0
+max = 255
+
+[protocols.vk87max.sample]
+rx = "00 00 4b 00 00 00 01 01"
+
+[protocols.vk87max.sample.expect]
+battery = 75
