@@ -9,7 +9,7 @@
 #       —— 三处必须一致，不一致会在「校验版本号」步骤直接失败。
 #       标签取 v<版本号>；若该标签已存在，会在发版前报错提醒你先把版本号改大。
 #    2) 发版说明：.github/RELEASE_NOTES.md（本次 Release 的正文）
-#       —— 正文末尾会自动附上「本次包含的提交」列表。
+#       —— 正文原样发布，不自动附加提交列表（避免暴露内部修复过程）。
 # ─────────────────────────────────────────────────────────────────────────────
 name: build
 
@@ -35,8 +35,6 @@ jobs:
     steps:
       - name: 检出源码
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # 需要完整历史来列「本次包含的提交」
 
       - name: 安装 Node
         uses: actions/setup-node@v4
@@ -145,28 +143,10 @@ jobs:
             $notes = [System.IO.File]::ReadAllText((Join-Path $PWD '.github/RELEASE_NOTES.md'), [System.Text.Encoding]::UTF8).Trim()
           }
 
-          # 上一个版本标签 → HEAD 之间的提交；没有标签就取最近 30 条
-          $prev = git tag --list 'v*' --sort=-v:refname | Select-Object -First 1
-          if ($prev) {
-            Write-Host "上一个版本标签：$prev"
-            $commits = git log "$prev..HEAD" --pretty=format:'- %s (`%h`)'
-          } else {
-            Write-Host '没有历史标签，列出最近 30 条提交'
-            $commits = git log -30 --pretty=format:'- %s (`%h`)'
-          }
-          if (-not $commits) { $commits = '- （无新提交）' }
-
-          $parts = @()
-          if ($notes) { $parts += $notes }
-          $parts += ''
-          $parts += '---'
-          $parts += ''
-          $parts += '### 本次包含的提交'
-          $parts += ''
-          $parts += $commits
-
+          # 只发布维护者写的说明；不附加提交列表，避免把内部修复过程带给用户。
+          if (-not $notes) { $notes = '本次更新请见 Release 附件。' }
           $path = Join-Path $PWD 'release-body.md'
-          [System.IO.File]::WriteAllText($path, ($parts -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
+          [System.IO.File]::WriteAllText($path, $notes, (New-Object System.Text.UTF8Encoding($false)))
           Write-Host "Release 正文已生成（$((Get-Item $path).Length) 字节）"
 
       - name: 发布 Release
