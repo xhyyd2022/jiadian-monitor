@@ -1,6 +1,6 @@
 <!--
   发版说明（Release 正文）
-  每次发版前改这里；正文会原样放进 GitHub Release，末尾自动附上「本次包含的提交」列表。
+  每次发版前改这里；正文会原样放进 GitHub Release（不附加提交列表）。
   **只写本次版本相对上一版的变化**：上一版正文不留在这里，历史看 GitHub Release 页面。
   版本号改这五处：package.json / package-lock.json / src-tauri/tauri.conf.json / src-tauri/Cargo.toml / src-tauri/Cargo.lock（必须一致）。
 -->
@@ -45,7 +45,6 @@
 
 - 用新 `jiadian-monitor-v0.9.7.zip` 覆盖到原目录；`settings.ini` 不在包内，原设置保留。
 - 覆盖后运行一次 `清除旧版协议.cmd`（删除旧版 JSON 协议库）；新包自带 TOML 协议库。
-- 云端 Release 的 zip 不含主题素材（公开仓库只收录程序图标）；需要内置主题请使用本地完整包。
 
 ### 许可证
 

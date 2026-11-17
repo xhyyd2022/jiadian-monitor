@@ -141,6 +141,8 @@ jobs:
             # 必须显式按 UTF-8 读：Windows PowerShell 5.1 的 Get-Content 默认按 ANSI 解码，
             # 无 BOM 的 UTF-8 文件会把中文 Release 正文变成乱码。
             $notes = [System.IO.File]::ReadAllText((Join-Path $PWD '.github/RELEASE_NOTES.md'), [System.Text.Encoding]::UTF8).Trim()
+            # 去掉文件顶部的维护说明注释，只发用户可见正文
+            $notes = [regex]::Replace($notes, '(?s)^\s*<!--.*?-->\s*', '').Trim()
           }
 
           # 只发布维护者写的说明；不附加提交列表，避免把内部修复过程带给用户。
