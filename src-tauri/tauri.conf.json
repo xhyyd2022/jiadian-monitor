@@ -20,7 +20,7 @@
         "decorations": false,
         "theme": "Dark",
         "visible": false,
-        "additionalBrowserArgs": "--remote-debugging-port=9333 --disable-features=CalculateNativeWinOcclusion,msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required"
+        "additionalBrowserArgs": "--remote-debugging-port=0 --disable-features=CalculateNativeWinOcclusion,msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required"
       }
     ],
     "security": {

@@ -36,6 +36,46 @@ pub fn find_browser() -> Option<String> {
 
 /// 离屏面板 WebView2 的 CDP 端口（与 `main.rs` 设的环境变量一致）。
 pub const PANEL_CDP_PORT: u16 = 9333;
+
+/// 读取 WebView2 在 `--remote-debugging-port=0` 下实际选中的端口。
+///
+/// 固定端口会被 Windows 的 Hyper-V/WSL 动态保留区吞掉（`netsh int ipv4
+/// show excludedportrange protocol=tcp` 会看到 9298–9397 之类把 9333 盖住），
+/// 此时 WebView2 进程仍在跑但根本没有监听 → CDP 等 20s 超时 → 界面卡「正在启动」。
+/// Chromium 会把真实端口写进 user-data-dir 下的 `DevToolsActivePort`（第一行）。
+pub fn panel_cdp_port() -> Result<u16, String> {
+    if let Ok(v) = std::env::var("JIADIAN_CDP_PORT") {
+        if let Ok(p) = v.trim().parse::<u16>() {
+            return Ok(p);
+        }
+    }
+    let root = std::env::var_os("WEBVIEW2_USER_DATA_FOLDER")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|e| e.parent().map(|p| p.join("webview-data")))
+        })
+        .ok_or("无法确定 WebView2 数据目录")?;
+    let candidates = [root.join("EBWebView").join("DevToolsActivePort"), root.join("DevToolsActivePort")];
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        for path in &candidates {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if let Some(port) = text.lines().next().and_then(|l| l.trim().parse::<u16>().ok()) {
+                    return Ok(port);
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "等待 WebView2 DevToolsActivePort 超时（{}）；若系统保留了临时端口，请重启应用或检查 --remote-debugging-port=0",
+                root.display()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
 /// CLI 模式（外部 Edge）用的 CDP 端口，避开 app 自己的。
 pub const CLI_CDP_PORT: u16 = 9335;
 

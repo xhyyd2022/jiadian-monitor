@@ -259,7 +259,8 @@ pub fn start_prepared(
     session.check()?;
     ensure_panel_webview(&app, &url, w, h)?;
     session.check()?;
-    let ws = render::page_ws_url_matching(render::PANEL_CDP_PORT, &needle)?;
+    let cdp_port = render::panel_cdp_port()?;
+    let ws = render::page_ws_url_matching(cdp_port, &needle)?;
     session.check()?;
     crate::logging::info(&format!("面板 CDP 就绪 +{}ms", t0.elapsed().as_millis()));
 
@@ -339,7 +340,7 @@ pub fn start_prepared(
                 cancel,
                 None,
                 Some(app),
-                render::PANEL_CDP_PORT,
+                cdp_port,
                 None, // SessionGuard owns GUI cleanup, supervisor only borrows.
                 io_gen,
             )) {
@@ -364,12 +365,14 @@ fn panel_file_name(html: &str) -> String {
 /// 为什么不能只设 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`：wry 0.57 总会调用
 /// `SetAdditionalBrowserArguments`，WebView2 在设置了该项后会忽略同名环境变量。
 fn webview2_args() -> String {
-    format!(
-        "--remote-debugging-port={} \
-         --disable-features=CalculateNativeWinOcclusion,msWebOOUI,msPdfOOUI,msSmartScreenProtection \
-         --autoplay-policy=no-user-gesture-required",
-        render::PANEL_CDP_PORT
-    )
+    // 端口用 0 让 WebView2 自己选一个未被系统保留/占用的端口，再从
+    // user-data-dir 的 DevToolsActivePort 读回。固定端口会被 Windows 的
+    // Hyper-V/WSL 动态保留区（`netsh int ipv4 show excludedportrange`）偶尔吞掉，
+    // 表现为 9333 根本没有监听 → CDP 等 20s 超时 → 界面一直「正在启动」。
+    "--remote-debugging-port=0 \
+     --disable-features=CalculateNativeWinOcclusion,msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+     --autoplay-policy=no-user-gesture-required"
+        .to_string()
 }
 
 /// 复用 / 创建离屏面板窗口（320×240，放到屏幕外 —— 隐藏窗口 Chromium 会停渲染）。
