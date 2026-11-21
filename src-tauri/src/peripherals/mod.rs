@@ -1,10 +1,10 @@
-//! 外设电量：JSON 协议库的加载、端点匹配、收发执行与后台轮询。
+//! 外设电量：TOML 协议库的加载、端点匹配、收发执行与后台轮询。
 //!
 //! 数据在 exe 同级的 `peripherals/`（开发时是 `app/peripherals/`），格式见那里的 `README.md`。
 //! 本模块只做四件事：
 //!
-//! 1. `dir()` + `load_cached()`：读盘并把 JSON 解析成结构（文件没变就用缓存）；
-//! 2. `resolve()`：拿 HID 端点去 `index.json` 查品牌与协议档位，再用 `match` 校验；
+//! 1. `dir()` + `load_cached()`：读盘并把 TOML 解析成结构（文件没变就用缓存）；
+//! 2. `resolve()`：拿 HID 端点去 `index.toml` 查品牌与协议档位，再用 `match` 校验；
 //! 3. `run_protocol()`：照协议发指令、挑回包、算电量与附加字段；
 //! 4. `spawn()`：后台线程定时枚举 + 轮询，结果放进 `STATE` 给界面和 HTTP API 用。
 //!
@@ -200,7 +200,7 @@ struct Resolved<'a> {
     brand_name: &'a str,
     protocol_name: &'a str,
     protocol: &'a Protocol,
-    /// `index.json` 里命中的条目；走公版兜底时为 `None`（没登记就没有型号/分类可继承）。
+    /// `index.toml` 里命中的条目；走公版兜底时为 `None`（没登记就没有型号/分类可继承）。
     entry: Option<&'a model::DeviceEntry>,
 }
 
@@ -241,7 +241,7 @@ fn match_endpoint(m: Option<&MatchSpec>, ep: &hid::Endpoint) -> bool {
 }
 
 /// 给一个 HID 端点选品牌与协议档位：精确 VID:PID 优先于通配，指名档位优先于其它。
-/// 公版兜底：`index.json` 里没登记的设备，只要端点对得上 `brands/generic.json` 的档位就照读。
+/// 公版兜底：`index.toml` 里没登记的设备，只要端点对得上 `brands/generic.toml` 的档位就照读。
 ///
 /// 约定是「默认公版，读不到再报错」——不是「没收录就消失」。标准 HID 电量
 /// （UsagePage 0006 / Usage 0020）本来就是协议自带的，不少无线键鼠/手柄直接按这个报，
@@ -283,7 +283,7 @@ fn generic_fallback<'a>(ld: &'a Loaded, ep: &hid::Endpoint) -> Option<Resolved<'
 
 /// PID 命中、VID 没命中的候选档位。
 ///
-/// 场景：`index.json` 登记的是 `3554:F503`，用户手里是换壳/换接收器的同款 —— PID 认得、VID 没收录。
+/// 场景：`index.toml` 登记的是 `3554:F503`，用户手里是换壳/换接收器的同款 —— PID 认得、VID 没收录。
 /// 老逻辑按 VID:PID 精确匹配，一台对不上就整台消失。这里把「同 PID 但不同 VID」的条目的档位
 /// 按顺序列出来，交给 `probe_once()` 真机试：谁先读回合法电量就用谁。
 fn loose_candidates<'a>(ld: &'a Loaded, ep: &hid::Endpoint) -> Vec<Resolved<'a>> {
@@ -429,11 +429,11 @@ fn resolve<'a>(ld: &'a Loaded, ep: &hid::Endpoint) -> Option<Resolved<'a>> {
     generic_fallback(ld, ep)
 }
 
-/// 只认品牌、不认协议：`index.json` 里登记过这个 VID:PID 就把它找出来。
+/// 只认品牌、不认协议：`index.toml` 里登记过这个 VID:PID 就把它找出来。
 ///
 /// 用在「品牌认得，但品牌文件里没有档位匹配上它的端点」这种情形——比如本机的
 /// 雷柏 24AE:1205。以前这种设备会被 `resolve()` 直接丢掉，整台设备从列表里
-/// 消失，用户只看到「什么都没有」，既不知道品牌也不到该改哪个 JSON。现在改成
+/// 消失，用户只看到「什么都没有」，既不知道品牌也不到该改哪个 TOML。现在改成
 /// 仍然列出来（品牌 + 型号 + 电量未知 + 一句原因），把问题指回配置文件。
 fn entry_only<'a>(
     ld: &'a Loaded,
@@ -466,7 +466,7 @@ fn entry_only<'a>(
     Some((d.brand.as_str(), brand_name, d))
 }
 
-/// 一个设备暴露的端点摘要，写进「没匹配上」的原因里，方便直接照着补 JSON。
+/// 一个设备暴露的端点摘要，写进「没匹配上」的原因里，方便直接照着补 TOML。
 fn endpoint_brief(ep: &hid::Endpoint) -> String {
     let base = format!(
         "UsagePage {:04X}/Usage {:04X}（输入 {} 输出 {} Feature {}）",
@@ -504,7 +504,7 @@ pub struct Reading {
     pub pid: String,
     /// 品牌显示名
     pub brand: String,
-    /// 品牌 key（与 index.json 一致）
+    /// 品牌 key（与 index.toml 一致）
     pub brand_key: String,
     /// 型号
     pub model: String,
@@ -537,9 +537,9 @@ pub struct Reading {
     pub online: bool,
     /// 读数来自退避缓存（设备在睡觉）
     pub stale: bool,
-    /// `index.json` 里登记了这个 VID:PID，但没有任何协议档位匹配上它的端点。
+    /// `index.toml` 里登记了这个 VID:PID，但没有任何协议档位匹配上它的端点。
     /// 这种情况下设备仍然出现在列表里（品牌型号照常显示），电量是未知的，
-    /// `error` 会写清楚是哪几个端点、该去补哪份 JSON。
+    /// `error` 会写清楚是哪几个端点、该去补哪份 TOML。
     pub supported: bool,
     pub note: Option<String>,
     pub error: Option<String>,
@@ -664,7 +664,7 @@ fn clamp_byte(v: f64) -> u8 {
     (n as i64 & 0xFF) as u8
 }
 
-/// 按 JSON 里的一帧描述组出要发出去的字节。
+/// 按协议档位里的一帧描述组出要发出去的字节。
 fn build_frame(f: &TxFrame) -> Vec<u8> {
     let len = f.length.max(1);
     let pad = f.pad.map(|b| b.0).unwrap_or(0);
@@ -1125,7 +1125,7 @@ impl Poller {
         let ld = match load_cached() {
             Ok(l) => l,
             Err(e) => {
-                // 目录或 index.json 有问题：清空缓存，界面显示原因
+                // 目录或 index.toml 有问题：清空缓存，界面显示原因
                 self.devs.clear();
                 snap.ok = false;
                 snap.errors.push(e);
@@ -1439,7 +1439,7 @@ impl Poller {
                 supported: false,
                 note: entry.note.clone(),
                 error: Some(format!(
-                    "认得品牌，但 brands/{brand_key}.json 里没有匹配这些端点的协议档位，电量未知；\
+                    "认得品牌，但 brands/{brand_key}.toml 里没有匹配这些端点的协议档位，电量未知；\
                      已知端点：{}。要支持它就照 README.md 加一个 match 对得上的档位（当前 index 指向 {proto_hint}）",
                     briefs.join("；")
                 )),
@@ -1447,7 +1447,7 @@ impl Poller {
             });
         }
 
-        // `index.json` 里查不到 VID:PID 的设备：以前直接静默丢弃，界面只剩一句「没有识别到已收录的外设」，
+        // `index.toml` 里查不到 VID:PID 的设备：以前直接静默丢弃，界面只剩一句「没有识别到已收录的外设」，
         // 用户根本分不清「没插上 / 没收录 / 被厂商软件占着」。这里汇总成一行提示，只做展示，不参与读数。
         let mut unknown: BTreeMap<(u16, u16), String> = BTreeMap::new();
         for ep in &endpoints {
@@ -1704,7 +1704,7 @@ fn hid_dump_impl(per_endpoint: bool) -> String {
 /// 逐个候选档位打印结果。
 ///
 /// 用来解决「知道 PID 但不知道是哪家（VID 没收录）」的情况：跑完就知道哪个档位能读回电量，
-/// 照着把 VID 补进 `index.json` 即可（补完就不用再试了）。
+/// 照着把 VID 补进 `index.toml` 即可（补完就不用再试了）。
 pub fn probe_dump() -> String {
     let ld = match load_cached() {
         Ok(l) => l,
@@ -1775,7 +1775,7 @@ pub fn probe_dump() -> String {
             }
         }
         if !tried {
-            s.push_str("  没有 PID 命中的候选档位：index.json 里没有这个 PID，需要新写一条\n");
+            s.push_str("  没有 PID 命中的候选档位：index.toml 里没有这个 PID，需要新写一条\n");
         }
     }
     if s.is_empty() {

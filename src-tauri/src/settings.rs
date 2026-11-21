@@ -60,7 +60,7 @@ pub struct Settings {
     pub appearance_bg: String,
     /// 强调色 `#RRGGBB`（空 = 跟随主题默认色）。
     pub appearance_accent: String,
-    /// 界面不透明度 40–100（100 = 完全不透明）。
+    /// 旧版界面不透明度（仅迁移到 Theme/theme.toml，当前界面不再直接使用）。
     pub appearance_opacity: u8,
 }
 
@@ -269,11 +269,12 @@ impl Settings {
              duration={}\n\
              \n\
              [appearance]\n\
-             ; 用户背景图（exe 同级 ui/ 下的文件名；留空 = 纯色背景）\n\
+             ; 旧版外观字段：仅首次启动时迁移到 Theme/theme.toml，修改这里不再生效。\n\
+             ; 背景图（exe 同级 ui/ 下的文件名）\n\
              background={}\n\
-             ; 强调色 #RRGGBB；留空 = 跟随主题默认色\n\
+             ; 强调色 #RRGGBB\n\
              accent={}\n\
-             ; 界面不透明度 40–100（100 = 完全不透明）\n\
+             ; 旧版界面不透明度 60–100\n\
              opacity={}\n",
             b(self.silent_start),
             b(self.logging),

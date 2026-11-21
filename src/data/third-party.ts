@@ -48,6 +48,12 @@ export const OSS_GROUPS: OssGroup[] = [
         "url": "https://iconify.design/icon-sets/line-md/"
       },
       {
+        "name": "@material/material-color-utilities",
+        "version": "0.4.0",
+        "license": "Apache-2.0",
+        "url": "https://github.com/material-foundation/material-color-utilities/tree/main/typescript"
+      },
+      {
         "name": "@tauri-apps/api",
         "version": "2.12.3",
         "license": "Apache-2.0 OR MIT",

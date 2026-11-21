@@ -132,20 +132,45 @@ async def main():
                 await ev("(()=>{const b=[...document.querySelectorAll('.side-btn')].find(x=>(x.textContent||'').includes(%s));b&&b.click();return !!b})()" % json.dumps(label))
                 await asyncio.sleep(0.8)
 
+            async def click_text(label: str) -> bool:
+                sel = (
+                    "(()=>{const sels=['.el-tabs__item','.el-segmented__item','[role=tab]',"
+                    "'button','[role=button]'];\n"
+                    "for(const q of sels){const els=[...document.querySelectorAll(q)];\n"
+                    "const e=els.find(x=>!x.disabled&&x.offsetParent!==null&&x.getClientRects().length>0"
+                    "&&(x.textContent||'').replace(/\\s+/g,'').includes(%s));\n"
+                    "if(e){e.click();return true}}return false})()"
+                ) % json.dumps(label)
+                ok = bool(await ev(sel))
+                await asyncio.sleep(0.6)
+                return ok
+
+            async def audit(key: str):
+                await ev("(()=>{const v=document.querySelector('.view');if(v)v.scrollTop=0;return true})()")
+                await asyncio.sleep(0.25)
+                metrics = json.loads(await ev(JS_METRICS))
+                try:
+                    axe = json.loads(await ev(JS_AXE, await_promise=True))
+                except Exception as e:
+                    axe = {"error": str(e)}
+                result[key] = {"metrics": metrics, "axe": axe}
+                print(key, "violations:",
+                      [(v["id"], v["impact"], v["nodes"]) for v in axe.get("violations", [])][:8])
+
             for theme_name, light in (("light", True), ("dark", False)):
                 await set_theme(light)
                 for key, label in PAGES:
                     await nav(label)
-                    await ev("(()=>{const v=document.querySelector('.view');if(v)v.scrollTop=0;return true})()")
-                    await asyncio.sleep(0.25)
-                    metrics = json.loads(await ev(JS_METRICS))
-                    try:
-                        axe = json.loads(await ev(JS_AXE, await_promise=True))
-                    except Exception as e:
-                        axe = {"error": str(e)}
-                    result[f"{theme_name}-{key}"] = {"metrics": metrics, "axe": axe}
-                    print(theme_name, key, "violations:",
-                          [(v["id"], v["impact"], v["nodes"]) for v in axe.get("violations", [])][:8])
+                    await audit(f"{theme_name}-{key}")
+                    if key == "settings" and await click_text("主题"):
+                        await audit(f"{theme_name}-settings-theme")
+                        await click_text("配色")
+                        if await click_text("高级"):
+                            await audit(f"{theme_name}-settings-theme-advanced")
+                        if await click_text("背景"):
+                            await audit(f"{theme_name}-settings-theme-bg")
+                        if await click_text("主题文件"):
+                            await audit(f"{theme_name}-settings-theme-file")
     finally:
         proc.terminate()
         time.sleep(0.3)

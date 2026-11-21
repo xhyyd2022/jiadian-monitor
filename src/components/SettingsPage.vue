@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { Icon } from "@iconify/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
@@ -16,6 +16,7 @@ import {
   unwatchProgress,
 } from "../composables/useLhwsProgress";
 import { APP_LICENSE, APP_LICENSE_URL, NOTICES_FILE, OSS_GROUPS } from "../data/third-party";
+import { paneIn } from "../motion";
 
 /// <details> 原生折叠的“连点保护”：快速连点会「开→关」抵消，看起来像第一次没响应。
 /// 350ms 内的重复点击直接取消默认行为，保留第一次点击的结果（仍可用键盘 Enter/Space 操作）。
@@ -49,9 +50,6 @@ const {
   unitTemp,
   unitDuration,
   theme,
-  appearanceBg,
-  appearanceAccent,
-  appearanceOpacity,
   toggleAutostart,
   openDevtools,
 } = useSettings();
@@ -124,7 +122,7 @@ function setUnitDuration(v: string | number): void {
 }
 
 // ---- 稳定分类入口 ----
-// S01：五类一眼可达，类内纵向设置行，不再靠双列长滚动找外观 / 数据源。
+// S01：五类一眼可达，类内纵向设置行，不再靠双列长滚动找设置项。
 // 使用 aria tab 模式 + 左右方向键，Tab 顺序与视觉阅读顺序一致。
 type CatId = "general" | "appearance" | "perf" | "logs" | "about";
 interface Category {
@@ -133,13 +131,41 @@ interface Category {
 }
 const categories: Category[] = [
   { id: "general", label: "通用" },
-  { id: "appearance", label: "显示与外观" },
+  { id: "appearance", label: "主题" },
   { id: "perf", label: "性能与数据源" },
   { id: "logs", label: "日志与单位" },
   { id: "about", label: "关于" },
 ];
 const catIds = categories.map((c) => c.id);
 const cat = ref<CatId>("general");
+
+// 分类指示条：只用 transform/width 位移，不阻塞切换；内容进入动画也不等待旧内容退出。
+const tabsRef = ref<HTMLElement | null>(null);
+const inkLeft = ref(0);
+const inkWidth = ref(0);
+const inkReady = ref(false);
+let inkRaf = 0;
+let inkObserver: ResizeObserver | null = null;
+
+function measureInk(): void {
+  const tabs = tabsRef.value;
+  const active = tabs?.querySelector<HTMLElement>(".cat-tab.on");
+  if (!tabs || !active) return;
+  inkLeft.value = active.offsetLeft;
+  inkWidth.value = active.offsetWidth;
+  inkReady.value = true;
+}
+
+function measureInkSoon(): void {
+  cancelAnimationFrame(inkRaf);
+  inkRaf = requestAnimationFrame(measureInk);
+}
+
+watch(cat, async () => {
+  await nextTick();
+  measureInkSoon();
+  paneIn(document.getElementById(`set-pane-${cat.value}`));
+});
 
 function focusCat(id: CatId): void {
   document.getElementById(`set-tab-${id}`)?.focus();
@@ -198,9 +224,6 @@ function settingsPatch() {
     unitRate: unitRate.value,
     unitTemp: unitTemp.value,
     unitDuration: unitDuration.value,
-    appearanceBg: appearanceBg.value,
-    appearanceAccent: appearanceAccent.value,
-    appearanceOpacity: appearanceOpacity.value,
   };
 }
 async function retrySave(): Promise<void> {
@@ -342,6 +365,12 @@ function confirmUninstall() {
 const openUrl = (url: string) => invoke("open_url", { url }).catch(() => {});
 
 onMounted(() => {
+  measureInkSoon();
+  window.addEventListener("resize", measureInkSoon);
+  if (tabsRef.value) {
+    inkObserver = new ResizeObserver(measureInkSoon);
+    inkObserver.observe(tabsRef.value);
+  }
   refreshLhws();
   getVersion()
     .then((v) => {
@@ -354,6 +383,9 @@ onMounted(() => {
 
 // 切走页面时把进度轮询停掉：安装还在后台继续，但没必要在看不见的页面上每 300ms 打一次
 onUnmounted(() => {
+  cancelAnimationFrame(inkRaf);
+  window.removeEventListener("resize", measureInkSoon);
+  inkObserver?.disconnect();
   unwatchProgress();
 });
 </script>
@@ -362,7 +394,7 @@ onUnmounted(() => {
   <div class="settings">
     <!-- 稳定分类入口 + 常驻保存状态（S01/S02）：头部不随内容滚走 -->
     <div class="settings-head">
-      <div class="cat-tabs" role="tablist" aria-label="设置分类">
+      <div ref="tabsRef" class="cat-tabs" role="tablist" aria-label="设置分类">
         <button
           v-for="(c, i) in categories"
           :id="`set-tab-${c.id}`"
@@ -379,6 +411,12 @@ onUnmounted(() => {
         >
           {{ c.label }}
         </button>
+        <span
+          class="cat-ink"
+          :class="{ ready: inkReady }"
+          :style="{ transform: `translateX(${inkLeft}px)`, width: `${inkWidth}px` }"
+          aria-hidden="true"
+        ></span>
       </div>
       <div class="save-status" role="status" aria-live="polite" :class="`is-${saveState}`">
         <span
@@ -499,7 +537,7 @@ onUnmounted(() => {
       </el-card>
     </section>
 
-    <!-- ================= 显示与外观 ================= -->
+    <!-- ================= 主题 ================= -->
     <section
       v-show="cat === 'appearance'"
       id="set-pane-appearance"
@@ -950,11 +988,29 @@ onUnmounted(() => {
   border-bottom: 1px solid var(--line);
 }
 .cat-tabs {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
   overflow: hidden;
+}
+.cat-ink {
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    width 180ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    opacity 120ms ease;
+}
+.cat-ink.ready {
+  opacity: 1;
 }
 .cat-tab {
   position: relative;
@@ -969,6 +1025,7 @@ onUnmounted(() => {
   line-height: 1.2;
   white-space: nowrap;
   cursor: pointer;
+  transition: color 140ms ease;
 }
 .cat-tab:last-child {
   margin-right: 0;
@@ -980,16 +1037,7 @@ onUnmounted(() => {
   color: var(--accent);
   font-weight: 600;
 }
-.cat-tab.on::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -1px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--accent);
-}
+
 
 .save-status {
   flex: none;

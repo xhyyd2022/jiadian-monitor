@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { getCurrentInstance, onMounted, ref, watch } from "vue";
+import { getCurrentInstance, nextTick, onMounted, ref, watch } from "vue";
 import { Icon } from "@iconify/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -8,6 +8,7 @@ import { ElMessage } from "element-plus";
 import GUIDE from "./material_prompt.md?raw";
 import OnlinePage from "./OnlinePage.vue";
 import { useOnline } from "../composables/useOnline";
+import { paneIn } from "../motion";
 
 /// 在线 AI 站点（要换站点就改这一行）
 const AI_URL = "https://chat.deepseek.com/";
@@ -225,9 +226,11 @@ function applyTheme(t: Theme): void {
 }
 
 // Tab 变化：回传面包屑；切到在线素材时重扫 `online/`（手改 TOML 后马上可见）
-watch(tab, () => {
+watch(tab, async () => {
   emitCrumb();
   if (tab.value === "online") void refreshOnline();
+  await nextTick();
+  paneIn(document.getElementById(`pane-${tab.value}`));
 });
 </script>
 
@@ -455,6 +458,7 @@ watch(tab, () => {
   padding: 0 16px;
   color: var(--sub);
   font-size: 12.5px;
+  transition: color 140ms ease;
 }
 .flat-tabs :deep(.el-tabs__item.is-active) {
   color: var(--accent);
@@ -464,6 +468,9 @@ watch(tab, () => {
   height: 2px;
   border-radius: 2px;
   background: var(--accent);
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    width 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 .flat-tabs :deep(.el-tabs__content) {
   flex: 1;

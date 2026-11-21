@@ -37,14 +37,6 @@ const unitRate = ref(""); // 速率：B/s KB/s MB/s GB/s
 const unitTemp = ref(""); // 温度：℃ ℉
 const unitDuration = ref(""); // 时长：秒 分 小时 天
 
-// ---- 外观 ----
-/// 用户背景图文件名（存在 exe 同级 ui/ 下；空串 = 不启用）
-const appearanceBg = ref("");
-/// 强调色 #RRGGBB；空串 = 跟随当前主题默认色
-const appearanceAccent = ref("");
-/// 界面不透明度 60–100（100 = 完全不透明）；保证文字对比度，不放到 0
-const appearanceOpacity = ref(94);
-
 /// `settings.ini` 里那份设置（后端 `settings_get` 的返回结构）。
 interface Settings {
   silentStart: boolean;
@@ -60,15 +52,11 @@ interface Settings {
   unitRate: string;
   unitTemp: string;
   unitDuration: string;
-  appearanceBg: string;
-  appearanceAccent: string;
-  appearanceOpacity: number;
 }
 
 const settingRefs = {
   theme, devtools, closeToTray, silentStart, logging, logLevel, highFps, hybridCompat,
   unitMode, unitCapacity, unitRate, unitTemp, unitDuration,
-  appearanceBg, appearanceAccent, appearanceOpacity,
 };
 const settingKeys = Object.keys(settingRefs) as (keyof Settings)[];
 const revisions = Object.fromEntries(settingKeys.map((key) => [key, 0])) as Record<keyof Settings, number>;
@@ -92,9 +80,6 @@ function snapshot(): Settings {
     unitRate: unitRate.value,
     unitTemp: unitTemp.value,
     unitDuration: unitDuration.value,
-    appearanceBg: appearanceBg.value,
-    appearanceAccent: appearanceAccent.value,
-    appearanceOpacity: appearanceOpacity.value,
   };
 }
 
@@ -116,11 +101,6 @@ function applySettings(s: Partial<Settings>) {
     if (typeof s.unitRate === "string") unitRate.value = s.unitRate;
     if (typeof s.unitTemp === "string") unitTemp.value = s.unitTemp;
     if (typeof s.unitDuration === "string") unitDuration.value = s.unitDuration;
-    if (typeof s.appearanceBg === "string") appearanceBg.value = s.appearanceBg;
-    if (typeof s.appearanceAccent === "string") appearanceAccent.value = s.appearanceAccent;
-    if (typeof s.appearanceOpacity === "number") {
-      appearanceOpacity.value = Math.min(100, Math.max(60, Math.round(s.appearanceOpacity)));
-    }
   } finally {
     applying = false;
   }
@@ -235,9 +215,6 @@ export function useSettings() {
     unitRate,
     unitTemp,
     unitDuration,
-    appearanceBg,
-    appearanceAccent,
-    appearanceOpacity,
     loadSettings,
     loadAutostart,
     toggleAutostart,

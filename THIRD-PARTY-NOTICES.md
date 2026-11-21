@@ -18,6 +18,7 @@
 | element-plus | 2.14.8 | MIT | https://element-plus.org/ |
 | @iconify/vue | 5.0.3 | MIT | https://iconify.design/ |
 | @iconify-icons/line-md | 2.0.0 | MIT | https://iconify.design/icon-sets/line-md/ |
+| @material/material-color-utilities | 0.4.0 | Apache-2.0 | https://github.com/material-foundation/material-color-utilities/tree/main/typescript |
 | @tauri-apps/api | 2.12.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri#readme |
 | @tauri-apps/plugin-dialog | 2.8.2 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace |
 | @tauri-apps/plugin-opener | 2.7.1 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace |
@@ -61,7 +62,7 @@
 
 ## 完整依赖清单
 
-### npm（共 110 个包）
+### npm（共 111 个包）
 
 | 名称 | 版本 | 许可证 | 主页 / 仓库 |
 | --- | --- | --- | --- |
@@ -78,6 +79,7 @@
 | @iconify/types | 2.0.0 | MIT | https://github.com/iconify/iconify |
 | @iconify/vue | 5.0.3 | MIT | https://iconify.design/ |
 | @jridgewell/sourcemap-codec | 1.6.0 | MIT | https://github.com/jridgewell/sourcemaps/tree/main/packages/sourcemap-codec |
+| @material/material-color-utilities | 0.4.0 | Apache-2.0 | https://github.com/material-foundation/material-color-utilities/tree/main/typescript |
 | @oxc-project/types | 0.153.0 | MIT | https://oxc.rs |
 | @popperjs/core | 2.11.8 | MIT | github:popperjs/popper-core |
 | @rolldown/binding-android-arm-eabi | 1.2.13 | — | — |

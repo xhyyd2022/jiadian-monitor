@@ -85,7 +85,7 @@ jobs:
           Copy-Item "$rel/jiadian-monitor.exe" $out -Force
           # 递归带上 assets（图标 + 主题）；没有 assets 目录时跳过
           if (Test-Path 'assets') { Copy-Item 'assets' $out -Recurse -Force }
-          # 外设协议 JSON（index.json + brands/）：用户可直接编辑，必须随包发布
+          # 外设协议 TOML（index.toml + brands/）：用户可直接编辑，必须随包发布
           if (Test-Path 'peripherals') {
             $periRoot = (Get-Item 'peripherals').FullName
             Get-ChildItem -Recurse -File 'peripherals' |
@@ -99,7 +99,7 @@ jobs:
           # 可选：若仓库内提供了卸载辅助工具，则一并打包（与 exe 同级才能按 %~dp0 找到它）
           if (Test-Path 'scripts/uninstall-lhws.bat') { Copy-Item 'scripts/uninstall-lhws.bat' $out -Force }
           # 许可证与第三方组件清单：随包分发，方便用户查阅
-          foreach ($f in @('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
+          foreach ($f in @('LICENSE', 'MATERIALS-LICENSE.txt', 'THIRD-PARTY-NOTICES.md')) {
             if (Test-Path $f) { Copy-Item $f $out -Force }
           }
           # 旧版 JSON 协议清理脚本：覆盖安装的用户运行一次即可迁移到 TOML

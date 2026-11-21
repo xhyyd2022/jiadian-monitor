@@ -1,4 +1,4 @@
-//! 外设协议 JSON 的反序列化结构。
+//! 外设协议 TOML 的反序列化结构。
 //!
 //! 字段含义见 `peripherals/README.md`。原则：**未知字段一律忽略**，缺省字段给安全默认值，
 //! 这样用户自己加注释性字段也不会让整份配置加载失败。
@@ -145,7 +145,7 @@ impl<'de> Deserialize<'de> for VidPid {
 
 // ---------------------------------------------------------------- index.toml
 
-// 这些结构只承载 JSON 内容，部分字段是给人看的说明 / 供后续使用，不强求都读到。
+// 这些结构只承载协议文件内容，部分字段是给人看的说明 / 供后续使用，不强求都读到。
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Index {
@@ -212,7 +212,7 @@ impl DeviceEntry {
     }
 }
 
-// ------------------------------------------------------- brands/<品牌>.json
+// ------------------------------------------------------- brands/<品牌>.toml
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
@@ -318,7 +318,7 @@ pub struct TxFrame {
     pub checksum: Option<Checksum>,
     #[serde(default)]
     pub delay_ms: Option<u64>,
-    /// 只在 JSON 里给人看，程序不读（保留是为了让协议文件自解释）。
+    /// 只在协议文件里给人看，程序不读（保留是为了让协议文件自解释）。
     #[allow(dead_code)]
     #[serde(default)]
     pub desc: Option<String>,
@@ -346,7 +346,7 @@ pub struct RxSpec {
     pub attempts: Option<u32>,
     #[serde(default)]
     pub interval_ms: Option<u64>,
-    /// 只在 JSON 里给人看，程序不读。
+    /// 只在协议文件里给人看，程序不读。
     #[allow(dead_code)]
     #[serde(default)]
     pub note: Option<String>,

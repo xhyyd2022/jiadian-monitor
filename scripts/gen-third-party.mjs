@@ -45,6 +45,7 @@ const runtime = [
   "element-plus",
   "@iconify/vue",
   "@iconify-icons/line-md",
+  "@material/material-color-utilities",
   "@tauri-apps/api",
   "@tauri-apps/plugin-dialog",
   "@tauri-apps/plugin-opener",

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from "vue";
+import { ref, computed, nextTick, watch, onMounted, onUnmounted } from "vue";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { ElMessage } from "element-plus";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -21,6 +21,7 @@ import {
 import lineMd from "./line-md-icons";
 import TitleBar from "./components/TitleBar.vue";
 import Sidebar from "./components/Sidebar.vue";
+import { paneIn } from "./motion";
 import SettingsPage from "./components/SettingsPage.vue";
 import MaterialsPage from "./components/MaterialsPage.vue";
 import PeripheralsPage from "./components/PeripheralsPage.vue";
@@ -120,6 +121,14 @@ interface DeviceInfo {
 }
 
 const page = ref<"home" | "perf" | "peripherals" | "materials" | "settings">("home");
+
+// 侧栏切页只让新内容淡入，不等待旧内容；快速连点也不会被动画排队。
+watch(page, async (_next, prev) => {
+  if (!prev) return;
+  await nextTick();
+  paneIn(document.querySelector(".view"), 3);
+});
+
 const error = ref("");
 const {
   theme,

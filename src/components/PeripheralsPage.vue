@@ -33,7 +33,7 @@ interface Reading {
   charging: boolean | null;
   online: boolean;
   stale: boolean;
-  /// false = 认得品牌，但 brands/<品牌>.json 里没有匹配它端点的档位，电量未知
+  /// false = 认得品牌，但 brands/<品牌>.toml 里没有匹配它端点的档位，电量未知
   supported: boolean;
   note: string | null;
   error: string | null;
@@ -70,7 +70,7 @@ const devices = computed(() => snap.value?.devices ?? []);
 /// 认得出品牌、但没匹配到协议档位的设备：只影响这些设备的电量，不能压过正常读数。
 const unsupportedDevices = computed(() => devices.value.filter((r) => !r.supported));
 
-/// 非阻断提示（后端 errors 里通常是未收录 VID/PID、单个品牌 JSON 解析失败等）。
+/// 非阻断提示（后端 errors 里通常是未收录 VID/PID、单个品牌协议文件解析失败等）。
 const partialErrors = computed(() => (snap.value?.ok ? snap.value?.errors ?? [] : []));
 
 /// 紧凑琥珀色提示条：只在“部分设备未支持”时出现。
@@ -556,7 +556,7 @@ onUnmounted(() => {
           <ul class="pd-tips">
             <li><b>休眠中</b>：设备省电休眠，读数暂停；操作一下设备或用顶部「刷新」读取一次会尝试唤醒，恢复后自动继续。</li>
             <li><b>可能休眠·重试中</b>：协议已匹配但这次读不到，通常是省电休眠；操作设备或点「刷新」会重新读取，下次轮询也会重试。</li>
-            <li><b>协议未匹配</b>：认得品牌但缺协议档位，电量无法读取；补 <code>brands/&lt;品牌&gt;.json</code> 后重新读取。</li>
+            <li><b>协议未匹配</b>：认得品牌但缺协议档位，电量无法读取；补 <code>brands/&lt;品牌&gt;.toml</code> 后重新读取。</li>
             <li><b>已断开</b>：设备不在线或读数过期；重新连接后自动恢复，不把旧值当实时值。</li>
           </ul>
           <p class="pd-fold-foot">
@@ -595,11 +595,11 @@ onUnmounted(() => {
           </div>
 
           <div class="pd-adv-block">
-            <div class="pd-adv-t">自定义协议（纯 JSON）</div>
+            <div class="pd-adv-t">自定义协议（纯 TOML）</div>
             <ol class="pd-steps">
               <li><code>{{ exeName || "jiadian-monitor.exe" }} --peripherals-hid</code> 查端点。</li>
               <li><code>index.toml</code> 加 <code>vid</code>/<code>pid</code> → <code>brand</code>。</li>
-              <li><code>brands/&lt;品牌&gt;.json</code> 写读法与电量字节。</li>
+              <li><code>brands/&lt;品牌&gt;.toml</code> 写读法与电量字节。</li>
               <li><code>--peripherals-selftest</code> 用真实回包自检。</li>
             </ol>
           </div>
@@ -812,17 +812,17 @@ onUnmounted(() => {
   border: none;
   border-radius: var(--r-ctl);
   background: transparent;
-  /* 深色琥珀提示条上 --accent(#619aff) 只有 4.32:1，这里改用更亮的蓝；浅色仍用主题强调色 */
-  color: #9ec1ff;
+  /* 跟着主题强调色走；与前景混合，保证琥珀提示条上的对比度 */
+  color: color-mix(in srgb, var(--accent) 58%, var(--fg));
   font-size: 12px;
   cursor: pointer;
 }
 :root.light .pd-link {
   color: var(--accent);
 }
-/* 提示条内链接固定用高对比蓝（不依赖 --accent）：深色琥珀底上约 7:1 */
+/* 提示条内链接跟随主题强调色，同时提高对比度 */
 .pd-banner .pd-link {
-  color: #b7d0ff;
+  color: color-mix(in srgb, var(--accent) 52%, var(--fg));
   font-weight: 600;
 }
 :root.light .pd-banner .pd-link {

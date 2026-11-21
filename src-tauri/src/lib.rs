@@ -1,5 +1,5 @@
 mod api;
-mod appearance;
+mod theme;
 mod assets;
 mod autostart;
 mod cpu_usage;
@@ -529,22 +529,46 @@ fn assets_dir() -> Option<String> {
     assets::dir().map(|p| p.to_string_lossy().to_string())
 }
 
-/// 导入用户背景图：复制到 exe 同级 `ui/background.<ext>`，返回文件名（前端写进 settings）。
+/// 读取当前主题（`Theme/theme.toml` 或选中的子目录），没有文件时自动建一份默认主题。
 #[tauri::command]
-fn appearance_import_bg(path: String) -> Result<String, String> {
-    appearance::import(&path)
+fn theme_load() -> Result<theme::ThemeData, String> {
+    theme::load()
 }
 
-/// 读取外观设置里记录的背景图字节；前端转 Blob URL 显示，不暴露文件系统路径。
+/// 保存主题（颜色、图片缩放/位置、不透明度都在 TOML 内）。
 #[tauri::command]
-fn appearance_bg_bytes(name: String) -> Result<Option<Vec<u8>>, String> {
-    appearance::read(&name)
+fn theme_save(config: theme::ThemeConfig) -> Result<(), String> {
+    theme::save(&config)
 }
 
-/// 清除背景图文件（设置项由前端通过 settings_set 清空）。
+/// 导入背景图到 `Theme/background.<ext>`，返回文件名。
 #[tauri::command]
-fn appearance_clear_bg() -> Result<(), String> {
-    appearance::clear()
+fn theme_import_image(path: String) -> Result<String, String> {
+    theme::import_image(&path)
+}
+
+/// 读取 `Theme/` 下的图片字节，前端转 Blob URL 预览。
+#[tauri::command]
+fn theme_image_bytes(name: String) -> Result<Option<Vec<u8>>, String> {
+    theme::image_bytes(&name)
+}
+
+/// 清除主题背景图（TOML 里的 image 由前端置空后再保存）。
+#[tauri::command]
+fn theme_clear_image() -> Result<(), String> {
+    theme::clear_image()
+}
+
+/// 打开 `Theme/` 文件夹，方便用户直接编辑/备份。
+#[tauri::command]
+fn theme_open_dir() -> Result<(), String> {
+    theme::open_dir()
+}
+
+/// 把当前主题包（theme.toml + 背景图）保存到用户选择的文件夹。
+#[tauri::command]
+fn theme_export(dir: String, overwrite: bool) -> Result<String, String> {
+    theme::export(&dir, overwrite)
 }
 
 /// 手动导入：把选中的 HTML（连同同目录图片）整理成主题文件夹，返回落位后的主题。
@@ -960,9 +984,13 @@ pub fn run() {
             link_state,
             assets_dir,
             import_panel,
-            appearance_import_bg,
-            appearance_bg_bytes,
-            appearance_clear_bg,
+            theme_load,
+            theme_save,
+            theme_import_image,
+            theme_image_bytes,
+            theme_clear_image,
+            theme_open_dir,
+            theme_export,
             online_list,
             online_save,
             online_delete,

@@ -197,9 +197,20 @@ async def main():
                 await nav("设置")
                 await asyncio.sleep(0.4)
                 await shot(f"{theme_name}-settings")
-                if await click_text("外观"):
+                if await click_text("主题"):
                     await asyncio.sleep(0.6)
+                    await click_text("配色")
+                    await asyncio.sleep(0.3)
                     await shot(f"{theme_name}-settings-appearance")
+                    if await click_text("高级"):
+                        await asyncio.sleep(0.5)
+                        await shot(f"{theme_name}-settings-theme-advanced")
+                    if await click_text("背景"):
+                        await asyncio.sleep(0.5)
+                        await shot(f"{theme_name}-settings-theme-bg")
+                    if await click_text("主题文件"):
+                        await asyncio.sleep(0.5)
+                        await shot(f"{theme_name}-settings-theme-file")
                 else:
                     await ev("(()=>{const v=document.querySelector('.view');if(v)v.scrollTop=v.scrollHeight;return true})()")
                     await asyncio.sleep(0.4)

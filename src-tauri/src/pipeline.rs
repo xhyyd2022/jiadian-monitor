@@ -547,7 +547,9 @@ function applyPeri(snap){
     var b=p+n[p];
     var has=(d.supported&&d.battery!==null&&d.battery!==undefined);
     pset(b+'_pct',has?d.battery:'—');
-    pset(b+'_name',d.model||d.brand||'—');
+    // 名字优先用 settings.ini 里的自定义名，其次品牌+型号；不要只取 model，
+    // 否则用户改过名、或型号为空时素材上会显示成另一台设备/空串。
+    pset(b+'_name',d.customName||d.name||d.defaultName||d.model||d.brand||'—');
     pset(b+'_status',pstatus(d));
     // PFED 里记的是完整槽名（`kbd1_pct` 这种），清理时也按完整槽名比对；
     // 只记基名 `kbd1` 会让下面那圈把所有槽都判成「本轮没出现」而当场清空。
@@ -1449,22 +1451,29 @@ fn is_remote_url(html: &str) -> bool {
 }
 
 /// 在线 URL 追加 `__api=<port>`：保留已有 query 与 #hash（页面可读它拿本地 API 端口）。
+///
+/// URL 里若已经带了 `__api=`（用户手写、或从上次加载的地址复制回来），先摘掉再追加：
+/// 否则页面 `URLSearchParams.get('__api')` 只会拿到第一个，端口一变就连不上。
 fn remote_panel_url(raw: &str) -> String {
     let raw = raw.trim();
     let (body, hash) = match raw.find('#') {
         Some(i) => (&raw[..i], &raw[i..]),
         None => (raw, ""),
     };
-    let sep = if body.contains('?') {
-        if body.ends_with('?') || body.ends_with('&') {
-            ""
-        } else {
-            "&"
-        }
-    } else {
-        "?"
+    let (path, query) = match body.find('?') {
+        Some(i) => (&body[..i], &body[i + 1..]),
+        None => (body, ""),
     };
-    format!("{body}{sep}__api={}{hash}", crate::api::PORT)
+    let mut q = String::new();
+    for kv in query.split('&') {
+        let kv = kv.trim();
+        if kv.is_empty() || kv.split('=').next().unwrap_or("") == "__api" {
+            continue;
+        }
+        q.push_str(kv);
+        q.push('&');
+    }
+    format!("{path}?{q}__api={}{hash}", crate::api::PORT)
 }
 
 /// 面板实际渲染用的 URL：
@@ -2131,6 +2140,25 @@ mod tests {
         assert_eq!(
             remote_panel_url("https://example.com/panel/?a=1&"),
             format!("https://example.com/panel/?a=1&__api={api}")
+        );
+    }
+
+    #[test]
+    fn remote_url_replaces_existing_api_param() {
+        // 地址里已带 __api（手写 / 复制上次加载的地址）：摘掉旧的再写当前端口，
+        // 否则页面只读到第一个值，端口一变就连不上本机接口。
+        let api = crate::api::PORT;
+        assert_eq!(
+            remote_panel_url("https://example.com/p/?__api=9999"),
+            format!("https://example.com/p/?__api={api}")
+        );
+        assert_eq!(
+            remote_panel_url("https://example.com/p/?a=1&__api=9999&b=2#x"),
+            format!("https://example.com/p/?a=1&b=2&__api={api}#x")
+        );
+        assert_eq!(
+            remote_panel_url("http://192.168.1.20:8080/p.html?__api="),
+            format!("http://192.168.1.20:8080/p.html?__api={api}")
         );
     }
 
